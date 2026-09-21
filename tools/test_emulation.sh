@@ -86,6 +86,10 @@ for test in tunnel_manager developer_session; do
 done
 "${CC[@]}" runtime/NativeCodeMemory.c tests/test_native_memory.c -o build/emulation/test_native_memory
 build/emulation/test_native_memory
+"${CC[@]}" runtime/HostDiagnostics.c runtime/HostExecutionProbe.c runtime/NativeCodeMemory.c tests/test_host_diagnostics.c -o build/emulation/test_host_diagnostics
+build/emulation/test_host_diagnostics
+"${CC[@]}" runtime/DebuggerArena.c runtime/HostDiagnostics.c runtime/HostExecutionProbe.c runtime/NativeCodeMemory.c tests/test_debugger_arena.c -o build/emulation/test_debugger_arena
+build/emulation/test_debugger_arena
 xcrun clang -fobjc-arc -Wall -Wextra -Werror -g -fsanitize=address,undefined \
     -Iruntime -Iauthorization -Iauthorization/App -framework Foundation \
     runtime/NativeCodeMemory.c authorization/Control/ArenaControl.c \

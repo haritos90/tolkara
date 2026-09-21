@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <mach/mach.h>
 
@@ -63,6 +64,25 @@ int main(void) {
     void *retained=quarantine.executable;
     nc_destroy(&quarantine);
     assert(quarantine.executable==retained && ((unsigned char *)retained)[0]==0);
+    // A mapping we did not make: nc_adopt adds the alias.
+    void *foreign=mmap(NULL,2*page,PROT_READ|PROT_EXEC,MAP_PRIVATE|MAP_ANON,-1,0);
+    if(foreign==MAP_FAILED) foreign=mmap(NULL,2*page,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
+    assert(foreign!=MAP_FAILED);
+    NativeCodeMemory adopted={0};
+    assert(!nc_adopt(&adopted,NULL,2*page) && errno==EINVAL);
+    assert(!nc_adopt(&adopted,foreign,0) && errno==EINVAL);
+    assert(!nc_adopt(&adopted,foreign,page+1) && errno==EINVAL);
+    assert(!nc_adopt(&adopted,(char *)foreign+8,2*page) && errno==EINVAL);
+    assert(!adopted.executable && !adopted.writable);
+    assert(nc_adopt(&adopted,foreign,2*page));
+    assert(adopted.published && adopted.executable==foreign && adopted.writable!=foreign);
+    assert(protection(adopted.writable)&VM_PROT_WRITE);
+    assert(!nc_adopt(&adopted,foreign,2*page) && errno==EINVAL); // already owns a mapping
+    assert(nc_write(&adopted,page,data,sizeof data));
+    assert(!memcmp((char *)adopted.executable+page,data,sizeof data));
+    nc_destroy(&adopted);
+    assert(!adopted.executable && !adopted.writable);
+
     unsigned old_calls=calls;
     assert(!nc_create_managed(&memory,page,uncertain_pages,&calls,&quarantine) && errno==EINVAL);
     assert(calls==old_calls); // No second helper attempt or allocation.

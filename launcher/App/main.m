@@ -128,7 +128,7 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
             UIApplication.sharedApplication.idleTimerDisabled=NO;return;
         }
         self.status.text=[NSString stringWithFormat:@"Starting %@…\nKeep the app open. Startup currently takes a few minutes.",AppDisplayName()];
-        // Guest main must enter from a timer callout, never a dispatch block.
+        // Enter from a timer callout, never a dispatch block.
         [self performSelector:@selector(startLocalGame) withObject:nil afterDelay:0];
     }];
 }

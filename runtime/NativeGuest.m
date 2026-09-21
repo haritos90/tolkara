@@ -67,8 +67,7 @@ static id log_exception(id exception) {
     } else LOG("[native] Objective-C exception object class=%s\n",object_getClassName(exception));
     return previous_exception_preprocessor ? previous_exception_preprocessor(exception) : exception;
 }
-// Opt-in crash diagnostics use only a preopened fd and raw memory reads in the
-// signal handler. Chain the client's handler unchanged after saving evidence.
+// Crash diagnostics: a preopened fd, then the guest's own handler.
 static int signal_log_fd=-1;
 static struct sigaction guest_signal_actions[NSIG];
 static void signal_hex(const char *label, uintptr_t value) {
@@ -121,9 +120,7 @@ static bool inside(const void *address, size_t size) {
     uintptr_t a = (uintptr_t)address, base = (uintptr_t)guest.arena.executable;
     return a >= base && a - base <= guest.arena.size && size <= guest.arena.size - (a - base);
 }
-// Optional diagnostics after debugger detachment. Log our own main thread's
-// return addresses and symbols only; never copy guest code or data, attach,
-// suspend the thread, or modify guest registers/instructions.
+// Our own return addresses only, never guest memory or registers.
 static void schedule_native_sample(thread_t thread, unsigned number) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC),dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
         arm_thread_state64_t state={0}; mach_msg_type_number_t count=ARM_THREAD_STATE64_COUNT;
@@ -200,7 +197,7 @@ static int guest_dladdr(const void *address, Dl_info *info) {
 }
 static int guest_mprotect(void *address, size_t size, int prot) {
     LOG("[native] mprotect(%p,%#zx,%d)\n",address,size,prot);
-    // Keep executable backing RX; imported stores/copies use its shared RW view.
+    // Executable pages stay RX; stores go through the RW view.
     if (inside(address,size) && (prot & PROT_EXEC)) prot &= ~PROT_WRITE;
     int result = mprotect(address,size,prot);
     if (result) LOG("[native] mprotect failed errno=%d\n",errno);
@@ -208,8 +205,7 @@ static int guest_mprotect(void *address, size_t size, int prot) {
 }
 static int guest_munmap(void *address, size_t size) {
     LOG("[native] munmap(%p,%#zx)\n",address,size);
-    // Reserve the runtime arena so a later fixed/hinted remap preserves the RX
-    // backing established before guest execution. Inaccessible until remapped.
+    // Reserve the arena: inaccessible until a later fixed remap.
     if (inside(address,size)) return mprotect(address,size,PROT_NONE);
     return munmap(address,size);
 }
@@ -284,9 +280,7 @@ static bool resolve(const char *symbol, int ordinal, bool weak, uint64_t *value,
     *value=(uintptr_t)pointer; return pointer || weak;
 }
 bool ng_initialize(const char *path, const char *frameworks, const char *library_map, FILE *log, bool full_startup) {
-    // Failure can leave installed Objective-C hooks and an uncertain helper.
-    // Do not reinstall hooks recursively or attempt another attachment in this
-    // process, even if failure happened before the arena became writable.
+    // One attempt per process: failure leaves hooks installed.
     if (atomic_exchange(&initialization_attempted,true)) {
         fprintf(log,"[native] startup was already attempted; restart the app\n"); return false;
     }
@@ -376,8 +370,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         ((void (*)(int,const char **,const char **,const char **))initializer)(argc,argv,env,apple);
         LOG("[native] first original initializer returned\n"); ok=true;
         if (full_startup) {
-            // Apple's ObjC SPI explicitly supports images created outside dyld.
-            // Invoke after the client's unpacking initializer restores its code.
+            // After the unpacking initializer has restored the code.
             void (*map_images)(unsigned,const char *const *,const struct mach_header *const *)=dlsym(RTLD_DEFAULT,"_objc_map_images");
             void (*load_image)(const char *,const struct mach_header *)=dlsym(RTLD_DEFAULT,"_objc_load_image");
             if (!map_images || !load_image) { LOG("[native] ObjC image registration unavailable\n"); ok=false; goto done; }
@@ -403,8 +396,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     }
 done:
     LOG("[native] result %s=%s\n",full_startup?"startup_return":"first_initializer",ok?"PASS":"FAIL");
-    // Retain live mappings and library handles: initializer-created pointers and
-    // worker threads may outlive this call. Only one guest per app process.
+    // Mappings and handles outlive this call. One guest per process.
     host_debugger_guest_complete(ok);
     return ok;
 }

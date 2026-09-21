@@ -16,6 +16,9 @@ typedef struct {
 // The publisher must verify its own initialization handshake and return false if
 // unavailable. Mapping success alone does not prove execution is permitted.
 typedef bool (*NCPublish)(void *executable, size_t size, void *context);
+// Largest arena that may be prepared at once. Diagnostics report it, so keep it
+// here rather than as a literal in the implementation.
+#define NC_MAX_ARENA (128u * 1024u * 1024u)
 // Zero-initialize memory before use. On error returns false and sets errno.
 bool nc_create(NativeCodeMemory *memory, size_t size, NCPublish publish, void *context);
 typedef enum { NC_REJECTED, NC_PREPARED, NC_UNCERTAIN } NCPreparation;
@@ -27,6 +30,8 @@ typedef NCPreparation (*NCPrepare)(void *executable, size_t size, void *context)
 // confirmed prepared-and-detached receipt may produce NC_PREPARED.
 bool nc_create_managed(NativeCodeMemory *memory, size_t size, NCPrepare prepare,
                        void *context, NativeCodeMemory *quarantine);
+// Adopt a debugger's executable mapping; only the alias is ours.
+bool nc_adopt(NativeCodeMemory *memory, void *executable, size_t size);
 // Caller must ensure no thread is executing the range while it is being changed.
 // Copies through RW, flushes caches, and keeps the RX protection unchanged.
 bool nc_write(NativeCodeMemory *memory, size_t offset, const void *bytes, size_t size);
