@@ -28,25 +28,34 @@ if [ -n "${TOLKARA_PROFILE:-}" ]; then
     cp "$PROFILE" "$OUT/Guest/profile.json"
 fi
 
-# Build/sign only our compatibility libraries. The original is never patched.
-if [ "${NATIVE_GUEST_SHIMS:-NO}" = YES ]; then
+# Our libraries only: YES per executable, GENERIC per framework.
+case "${NATIVE_GUEST_SHIMS:-NO}" in
+YES|GENERIC)
     if [ "${PLATFORM_NAME:-iphoneos}" = iphonesimulator ]; then P=iossim; else P=ios; fi
     W="$ROOT/build/native-$P"; mkdir -p "$W" "$OUT/Frameworks"
-    python3 "$ROOT/tools/classify.py" "$EXE" --out "$W/SURFACE.md" --map "$W/map.json" --raw "$W/surface.json"
-    python3 "$ROOT/tools/build_shims.py" "$P" "$W/surface.json" "$OUT/Frameworks"
-    cp "$W/map.json" "$OUT/Guest/libraries.json"
+    if [ "$NATIVE_GUEST_SHIMS" = GENERIC ]; then
+        python3 "$ROOT/tools/build_shims.py" "$P" generic "$OUT/Frameworks"
+    else
+        python3 "$ROOT/tools/classify.py" "$EXE" --out "$W/SURFACE.md" --map "$W/map.json" --raw "$W/surface.json"
+        python3 "$ROOT/tools/build_shims.py" "$P" "$W/surface.json" "$OUT/Frameworks"
+        cp "$W/map.json" "$OUT/Guest/libraries.json"
+    fi
     MACSDK=$(xcrun --sdk macosx --show-sdk-path)
     xcrun --sdk macosx clang -target arm64-apple-macos14.0 -isysroot "$MACSDK" \
       -fobjc-arc -Wno-deprecated-declarations -framework Foundation -framework Security \
       "$ROOT/tools/export_system_anchors.m" -o "$ROOT/build/export_system_anchors"
     "$ROOT/build/export_system_anchors" "$OUT/CompatibilityRootCertificates.plist"
-    RESOURCES="$(dirname "$(dirname "$EXE")")/Resources"
-    if [ -d "$RESOURCES" ]; then
-        mkdir -p "$MODULE/Nibs"
-        for nib in "$RESOURCES"/*.nib; do
-            [ -f "$nib" ] || continue
-            python3 "$ROOT/tools/inspect_nib.py" "$nib" --out "$MODULE/Nibs/$(basename "$nib").json"
-        done
+    # Nibs belong to one application's resources.
+    if [ "$NATIVE_GUEST_SHIMS" = YES ]; then
+        RESOURCES="$(dirname "$(dirname "$EXE")")/Resources"
+        if [ -d "$RESOURCES" ]; then
+            mkdir -p "$MODULE/Nibs"
+            for nib in "$RESOURCES"/*.nib; do
+                [ -f "$nib" ] || continue
+                python3 "$ROOT/tools/inspect_nib.py" "$nib" --out "$MODULE/Nibs/$(basename "$nib").json"
+            done
+        fi
     fi
     for f in "$OUT/Frameworks"/*.dylib; do codesign -f -s "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$f" 2>/dev/null; done
-fi
+    ;;
+esac

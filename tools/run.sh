@@ -2,6 +2,7 @@
 # One-command loop: build, install, launch, collect console + crash logs.
 # usage: tools/run.sh sim|device [seconds]      (default 15 s of console capture)
 # env:   GUEST_EXE=/path/to/macOS/executable    (default: in-repo test guest)
+#        NATIVE_GUEST_SHIMS=GENERIC             (adapters, no executable)
 #        DEVICE=<udid or name>                  (device mode; default: first paired device)
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -22,7 +23,8 @@ fi
 
 tools/generate.sh
 xcodebuild -project Tolkara.xcodeproj -scheme TolkaraDiagnostics -destination "$DEST" -derivedDataPath build/dd \
-    -allowProvisioningUpdates ${PROV:-} GUEST_EXE="${GUEST_EXE:-}" build > "$LOG/build.log" 2>&1
+    -allowProvisioningUpdates ${PROV:-} GUEST_EXE="${GUEST_EXE:-}" \
+    NATIVE_GUEST_SHIMS="${NATIVE_GUEST_SHIMS:-NO}" build > "$LOG/build.log" 2>&1
 if ! grep -q "BUILD SUCCEEDED" "$LOG/build.log"; then grep -E "error:|exit" "$LOG/build.log" | head -20; echo "BUILD FAILED -> $LOG/build.log"; exit 1; fi
 APP=build/dd/Build/Products/$CONF/TolkaraDiagnostics.app
 
