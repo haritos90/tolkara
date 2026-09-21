@@ -105,7 +105,9 @@ build/emulation/test_local_arena_poller
 build/emulation/test_guest_wait
 "${CC[@]}" runtime/GuestWait.c tests/test_guest_wait_runloop.c -framework CoreFoundation -o build/emulation/test_guest_wait_runloop
 build/emulation/test_guest_wait_runloop
-"${CC[@]}" runtime/GuestMemory.c runtime/GuestImage.c runtime/GuestFixups.c tools/guest_probe.c -o build/emulation/guest_probe_sanitized
+"${CC[@]}" runtime/GuestMemory.c runtime/GuestImage.c runtime/GuestLink.c tests/test_link.c -o build/emulation/test_link
+build/emulation/test_link
+"${CC[@]}" runtime/GuestMemory.c runtime/GuestImage.c runtime/GuestFixups.c runtime/GuestLink.c tools/guest_probe.c -o build/emulation/guest_probe_sanitized
 python3 tests/test_image.py build/emulation/guest_probe_sanitized
 # An image with chained fixups: the probe walks the chains.
 xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -x c -o build/emulation/chained_fixture - <<'C'
@@ -115,6 +117,24 @@ const void *pointers[] = {&message, (const void *)&puts, &pointers[0]};
 int main(void) { puts(message); return pointers[2] != 0; }
 C
 build/emulation/guest_probe_sanitized build/emulation/chained_fixture --validate-fixups > /dev/null
+# An application carrying a library of its own, through @rpath.
+rm -rf build/emulation/Fixture.app
+mkdir -p build/emulation/Fixture.app/Contents/MacOS build/emulation/Fixture.app/Contents/Frameworks
+cat > build/emulation/carried.c <<'C'
+int carried_value(void) { return 7; }
+C
+cat > build/emulation/carrier.c <<'C'
+int carried_value(void);
+int main(void) { return carried_value(); }
+C
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libcarried.dylib build/emulation/carried.c \
+    -o build/emulation/Fixture.app/Contents/Frameworks/libcarried.dylib
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 build/emulation/carrier.c \
+    build/emulation/Fixture.app/Contents/Frameworks/libcarried.dylib -Wl,-rpath,@executable_path/../Frameworks \
+    -o build/emulation/Fixture.app/Contents/MacOS/Fixture
+build/emulation/guest_probe_sanitized build/emulation/Fixture.app/Contents/MacOS/Fixture \
+    --carried-libraries --validate-fixups | grep -q "imports from carried libraries=1 elsewhere=0"
 python3 tests/test_package.py
 python3 tests/test_profile.py
 xcrun clang -arch arm64 -x c -o build/emulation/module_fixture - <<'C'

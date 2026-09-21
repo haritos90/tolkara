@@ -1,0 +1,71 @@
+#include "GuestLink.h"
+#include <assert.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static void make(const char *path) { assert(!mkdir(path, 0700) || errno == EEXIST); }
+static void touch(const char *path) { FILE *file = fopen(path, "w"); assert(file); fputc('x', file); fclose(file); }
+
+int main(void) {
+    char root[] = "/tmp/tolkara-link-XXXXXX";
+    assert(mkdtemp(root));
+    char bundle[512], contents[512], macos[512], frameworks[512];
+    char executable[512], carried[512], outside[512], out[512];
+    snprintf(bundle, sizeof bundle, "%s/App.app", root);
+    snprintf(contents, sizeof contents, "%s/Contents", bundle);
+    snprintf(macos, sizeof macos, "%s/MacOS", contents);
+    snprintf(frameworks, sizeof frameworks, "%s/Frameworks", contents);
+    make(bundle); make(contents); make(macos); make(frameworks);
+    snprintf(executable, sizeof executable, "%s/App", macos);
+    snprintf(carried, sizeof carried, "%s/libcarried.dylib", frameworks);
+    snprintf(outside, sizeof outside, "%s/elsewhere.dylib", root);
+    touch(executable); touch(carried); touch(outside);
+
+    // /tmp is itself a link: resolve both, as gl_load does.
+    char resolved_bundle[512], resolved_executable[512];
+    assert(realpath(bundle, resolved_bundle) && realpath(executable, resolved_executable));
+    GuestLinkSet set = {0};
+    set.root = strdup(resolved_bundle);
+    set.executable = strdup(resolved_executable);
+    assert(set.root && set.executable);
+    GuestImage from = {0};
+    char rpath[] = "@executable_path/../Frameworks";
+    from.rpath_count = 1;
+    from.rpaths[0] = rpath;
+
+    // The usual shape: @rpath expanded through the image's own rpath.
+    char resolved_carried[512];
+    assert(realpath(carried, resolved_carried));
+    assert(gl_resolve(&set, &from, executable, "@rpath/libcarried.dylib", out, sizeof out));
+    assert(!strcmp(out, resolved_carried));
+    // Relative to whichever image is asking, and to the executable.
+    assert(gl_resolve(&set, &from, carried, "@loader_path/libcarried.dylib", out, sizeof out));
+    assert(!strcmp(out, resolved_carried));
+    assert(gl_resolve(&set, &from, executable, "@executable_path/../Frameworks/libcarried.dylib", out, sizeof out));
+    assert(!strcmp(out, resolved_carried));
+    // An absolute path inside the application is still the application's.
+    assert(gl_resolve(&set, &from, executable, carried, out, sizeof out));
+
+    // Nothing outside the application is ever opened.
+    assert(!gl_resolve(&set, &from, executable, "/usr/lib/libSystem.B.dylib", out, sizeof out));
+    assert(!gl_resolve(&set, &from, executable, outside, out, sizeof out));
+    assert(!gl_resolve(&set, &from, executable, "@executable_path/../../elsewhere.dylib", out, sizeof out));
+    assert(!gl_resolve(&set, &from, executable, "@rpath/../../elsewhere.dylib", out, sizeof out));
+    // Nor a directory, a name resolving nowhere, or bare @rpath.
+    assert(!gl_resolve(&set, &from, executable, frameworks, out, sizeof out));
+    assert(!gl_resolve(&set, &from, executable, "@rpath/absent.dylib", out, sizeof out));
+    GuestImage bare = {0};
+    assert(!gl_resolve(&set, &bare, executable, "@rpath/libcarried.dylib", out, sizeof out));
+    // An unknown prefix is not guessed at.
+    assert(!gl_resolve(&set, &from, executable, "@unknown_path/libcarried.dylib", out, sizeof out));
+
+    gl_destroy(&set);
+    assert(!set.root && !set.executable && !set.count);
+    unlink(executable); unlink(carried); unlink(outside);
+    rmdir(macos); rmdir(frameworks); rmdir(contents); rmdir(bundle); rmdir(root);
+    puts("PASS: carried library paths resolve inside the application only (@rpath, @loader_path, @executable_path)");
+}

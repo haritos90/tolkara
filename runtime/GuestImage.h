@@ -2,7 +2,7 @@
 #include "GuestMemory.h"
 #include <stdio.h>
 
-enum { GI_MAX_SEGMENTS = 64, GI_MAX_DYLIBS = 128 };
+enum { GI_MAX_SEGMENTS = 64, GI_MAX_DYLIBS = 128, GI_MAX_RPATHS = 32 };
 typedef struct {
     char name[17];
     uint64_t address, size, file_offset, file_size;
@@ -24,6 +24,8 @@ typedef struct {
     size_t tls_alignment;
     char *dylibs[GI_MAX_DYLIBS];
     size_t dylib_count;
+    char *rpaths[GI_MAX_RPATHS];   // LC_RPATH, for expanding @rpath install names
+    size_t rpath_count;
     bool chained_fixups, has_tls;
 } GuestImage;
 // Reads a thin or universal original executable. Never dlopens or writes it.

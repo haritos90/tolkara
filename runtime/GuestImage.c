@@ -23,6 +23,7 @@ static bool read_at(FILE *f, uint64_t offset, void *out, size_t size) {
 }
 void gi_destroy(GuestImage *image) {
     for (size_t i = 0; i < image->dylib_count; i++) free(image->dylibs[i]);
+    for (size_t i = 0; i < image->rpath_count; i++) free(image->rpaths[i]);
     free(image->exports);
     gm_destroy(&image->memory); *image = (GuestImage){0};
 }
@@ -133,6 +134,18 @@ static bool load(FILE *f, GuestImage *image, uint32_t file_type, char *error, si
             image->dylibs[image->dylib_count++] = name;
             if (!read_at(f, slice + cursor + d.dylib.name.offset, name, length) ||
                 !memchr(name, 0, length)) BAD("unterminated dylib name");
+        } else if (lc.cmd == LC_RPATH) {
+            struct rpath_command r;
+            if (lc.cmdsize < sizeof r || !read_at(f, slice + cursor, &r, sizeof r) ||
+                r.path.offset < sizeof r || r.path.offset >= lc.cmdsize) BAD("invalid rpath command");
+            // More rpaths than this is not an image we load.
+            if (image->rpath_count == GI_MAX_RPATHS) BAD("too many rpaths");
+            size_t length = lc.cmdsize - r.path.offset;
+            char *path = malloc(length);
+            if (!path) BAD("cannot allocate rpath");
+            image->rpaths[image->rpath_count++] = path;
+            if (!read_at(f, slice + cursor + r.path.offset, path, length) ||
+                !memchr(path, 0, length)) BAD("unterminated rpath");
         } else if (lc.cmd == LC_MAIN) {
             struct entry_point_command entry;
             if (have_entry || lc.cmdsize < sizeof entry || !read_at(f, slice + cursor, &entry, sizeof entry)) BAD("invalid LC_MAIN");
