@@ -25,6 +25,7 @@
 @property(nonatomic, strong) UIButton *importButton;
 @property(nonatomic, strong) UILabel *debugPanel;
 @property(nonatomic) BOOL debugInfo;
+@property(nonatomic) BOOL debugPrepared;
 @property(nonatomic) BOOL consumedImportArgument;
 #if TOLKARA_INTEGRATED_AUTH
 @property(nonatomic,strong) TKLocalAuthorization *localAuthorization;
@@ -309,8 +310,7 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
     self.debugPanel.text=[[lines subarrayWithRange:NSMakeRange(lines.count-tail,tail)] componentsJoinedByString:@"\n"];
 }
 
-- (void)startGuest {
-    if(self.debugInfo) [self collectDebugInfo];
+- (void)startGuestSession {
     NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
     self.importButton.hidden=NO;
     if([arguments containsObject:@"--local-shader-probe"]) {
@@ -587,6 +587,59 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
         return;
     }
     self.status.text = @"Unknown guest runtime configuration.";
+}
+// Counted attempts, not a deadline: the app is suspended meanwhile.
+- (void)waitForDebugger {
+    self.debugPanel.hidden=NO;
+    self.debugPanel.text=@"Waiting for a debugger…";
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+        BOOL ready=NO;
+        for(unsigned attempt=0;attempt<240 && !ready;attempt++) {
+            if((ready=hd_may_run_unsigned_code())) break;
+            if(!(attempt%4)) dispatch_async(dispatch_get_main_queue(),^{
+                self.debugPanel.text=[NSString stringWithFormat:@"Waiting for a debugger… %us",attempt/4];
+            });
+            usleep(250*1000);
+        }
+        dispatch_async(dispatch_get_main_queue(),^{
+            if(ready) [self collectDebugInfo];
+            else self.debugPanel.text=@"No debugger appeared; guest memory cannot be prepared in this session.";
+            // Enter from a run-loop callout, never a dispatch block.
+            [self performSelector:@selector(startGuestSession) withObject:nil afterDelay:0];
+        });
+    });
+}
+// stikdebug://enable-jit. The universal script suits either device.
+- (NSURL *)stikDebugRequest {
+    NSURLComponents *components=[NSURLComponents new];
+    components.scheme=@"stikdebug";
+    components.host=@"enable-jit";
+    components.queryItems=@[
+        [NSURLQueryItem queryItemWithName:@"bundle-id" value:NSBundle.mainBundle.bundleIdentifier],
+        [NSURLQueryItem queryItemWithName:@"pid" value:[NSString stringWithFormat:@"%d",getpid()]],
+        [NSURLQueryItem queryItemWithName:@"script-name" value:@"universal.js"],
+    ];
+    return components.URL;
+}
+- (void)startGuest {
+    // Debug memory comes from outside the app. Once per session.
+    if(!self.debugInfo || self.debugPrepared) { [self startGuestSession]; return; }
+    self.debugPrepared=YES;
+    if(hd_may_run_unsigned_code()) { [self collectDebugInfo]; [self startGuestSession]; return; }
+    NSURL *request=[self stikDebugRequest];
+    if(!request || ![UIApplication.sharedApplication canOpenURL:request]) { [self waitForDebugger]; return; }
+    UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Debug session"
+        message:@"Guest memory has to be prepared by a debugger outside this app. StikDebug can do that with its universal script."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Open StikDebug" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        [UIApplication.sharedApplication openURL:request options:@{} completionHandler:nil];
+        [self waitForDebugger];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Wait" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        (void)action;[self waitForDebugger];
+    }]];
+    [self.window.rootViewController presentViewController:alert animated:YES completion:nil];
 }
 @end
 

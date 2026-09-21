@@ -322,21 +322,26 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     for(size_t i=0;i<guest.image.segment_count;i++) {
         GISegment *s=&guest.image.segments[i]; if(s->prot && s->address+s->size>end) end=s->address+s->size;
     }
+    size_t span=(size_t)(end-guest.base);
+    LOG("[native] guest image span %zu bytes; the arena holds at most %u\n",span,(unsigned)NC_MAX_ARENA);
+    if (span>NC_MAX_ARENA) {
+        LOG("[native] this image needs more executable memory than an arena may hold\n"); goto done;
+    }
     bool arena_ready;
     bool external=atomic_load(&use_external_authorization) ||
         [NSProcessInfo.processInfo.arguments containsObject:@"--external-authorization"];
     if(external) {
         // Ask an attached debugger first, then have it detach.
-        arena_ready=da_request_arena(&guest.arena,(size_t)(end-guest.base),guest.log);
+        arena_ready=da_request_arena(&guest.arena,span,guest.log);
         if(arena_ready) (void)da_release_debugger(&guest.arena,guest.log);
-        else arena_ready=nc_create_managed(&guest.arena,(size_t)(end-guest.base),prepare_externally,NULL,&external_quarantine);
+        else arena_ready=nc_create_managed(&guest.arena,span,prepare_externally,NULL,&external_quarantine);
     }
 #if TOLKARA_INTEGRATED_AUTH
     else if(atomic_load(&use_local_authorization) || [NSProcessInfo.processInfo.arguments containsObject:@"--local-native-authorization"])
-        arena_ready=nc_create_managed(&guest.arena,(size_t)(end-guest.base),TKPrepareLocalArena,NULL,&local_quarantine);
+        arena_ready=nc_create_managed(&guest.arena,span,TKPrepareLocalArena,NULL,&local_quarantine);
 #endif
     else
-        arena_ready=nc_create(&guest.arena,(size_t)(end-guest.base),publish,NULL);
+        arena_ready=nc_create(&guest.arena,span,publish,NULL);
     if (!arena_ready) { LOG("[native] arena preparation failed errno=%d; guest entry blocked\n",errno); goto done; }
     // A protection change can be reported and not granted.
     LOG("[native] arena protection %#x\n",hd_protection(guest.arena.executable));

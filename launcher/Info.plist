@@ -8,6 +8,10 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>TolkaraGuestRuntime</key>
 	<string>$(GUEST_RUNTIME)</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>stikdebug</string>
+	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Allow the app you run in Tolkara to use the microphone, for example for in-game voice chat.</string>
 </dict>
