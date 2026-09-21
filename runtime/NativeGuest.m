@@ -2,6 +2,7 @@
 #include "NativeGuest.h"
 #include "HostDiagnostics.h"
 #include "DebuggerArena.h"
+#include "GuestStubs.h"
 #include "NativeCodeMemory.h"
 #if TOLKARA_INTEGRATED_AUTH
 #import "LocalAuthorization.h"
@@ -284,12 +285,23 @@ static void *guest_dlsym(void *handle, const char *name) {
     void *value = hook(name); if (!value) value = dlsym(handle,name);
     LOG("[native] dlsym(%s) -> %p\n",name,value); return value;
 }
+// No map: our adapter for the leaf name, else iOS.
+static NSString *library_path(NSString *install_name, const char *frameworks) {
+    NSString *leaf=install_name.lastPathComponent;
+    NSString *adapter=[@(frameworks) stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"ak%@.dylib",[leaf hasSuffix:@".dylib"]?[leaf stringByDeletingPathExtension]:leaf]];
+    if ([NSFileManager.defaultManager fileExistsAtPath:adapter]) return adapter;
+    if ([leaf hasSuffix:@".dylib"]) return [@"/usr/lib" stringByAppendingPathComponent:leaf];
+    return [NSString stringWithFormat:@"/System/Library/Frameworks/%@.framework/%@",leaf,leaf];
+}
 static bool resolve(const char *symbol, int ordinal, bool weak, uint64_t *value, void *context) {
     (void)context;
     const char *name = symbol[0]=='_' ? symbol+1 : symbol;
     void *pointer = hook(name);
     if (!pointer && ordinal>0 && guest.libraries[ordinal-1]) pointer=dlsym(guest.libraries[ordinal-1],name);
     if (!pointer) pointer=dlsym(RTLD_DEFAULT,name);
+    // Nothing provides it: a stub, or null when weak.
+    if (!pointer && !weak) pointer=gs_bind(symbol,gs_kind(symbol));
     if (!pointer && !weak) LOG("[native] unresolved %s ordinal=%d\n",symbol,ordinal);
     *value=(uintptr_t)pointer; return pointer || weak;
 }
@@ -298,7 +310,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     if (atomic_exchange(&initialization_attempted,true)) {
         fprintf(log,"[native] startup was already attempted; restart the app\n"); return false;
     }
-    guest.log=log; guest.path=strdup(path);
+    guest.log=log; guest.path=strdup(path); gs_log(log);
     guest_arguments=@[@(path)];
     Method arguments_method=class_getInstanceMethod(NSProcessInfo.class,@selector(arguments));
     original_arguments=(void *)method_setImplementation(arguments_method,(IMP)guest_process_arguments);
@@ -353,11 +365,16 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     {
         NSData *data=[NSData dataWithContentsOfFile:@(library_map)];
         NSDictionary *mapping=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL]:nil;
-        if (![mapping isKindOfClass:NSDictionary.class]) { LOG("[native] missing library map\n"); goto done; }
+        // A map comes with a build made for one executable.
+        if (![mapping isKindOfClass:NSDictionary.class]) {
+            LOG("[native] no library map; libraries are resolved by name\n"); mapping=nil;
+        }
         NSString *support=[@(frameworks) stringByAppendingPathComponent:@"libAKSupport.dylib"];
-        if (!dlopen(support.fileSystemRepresentation,RTLD_NOW|RTLD_GLOBAL)) { LOG("[native] support load failed: %s\n",dlerror()); goto done; }
+        if ([NSFileManager.defaultManager fileExistsAtPath:support] &&
+            !dlopen(support.fileSystemRepresentation,RTLD_NOW|RTLD_GLOBAL)) { LOG("[native] support load failed: %s\n",dlerror()); goto done; }
         for(size_t i=0;i<guest.image.dylib_count;i++) {
-            NSString *original=@(guest.image.dylibs[i]); NSString *target=mapping[original]?:original;
+            NSString *original=@(guest.image.dylibs[i]);
+            NSString *target=mapping[original]?:library_path(original,frameworks);
             if ([target hasPrefix:@"@rpath/"]) target=[@(frameworks) stringByAppendingPathComponent:target.lastPathComponent];
             guest.libraries[i]=dlopen(target.fileSystemRepresentation,RTLD_NOW|RTLD_GLOBAL);
             if (!guest.libraries[i]) LOG("[native] library %s unavailable: %s\n",target.UTF8String,dlerror());
@@ -370,7 +387,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     if([NSProcessInfo.processInfo.arguments containsObject:@"--sample-native"]) signal_log_fd=open([[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/native-signal.log"] fileSystemRepresentation],O_WRONLY|O_CREAT|O_TRUNC,0600);
     shader_wait_pending=dlsym(RTLD_DEFAULT,"AKShaderWaitPending");
     if (!gf_apply(&guest.image,guest.slide,resolve,NULL,&stats,error,sizeof error)) { LOG("[native] fixups failed: %s\n",error); goto done; }
-    LOG("[native] resolved rebases=%zu binds=%zu\n",stats.rebases,stats.binds);
+    LOG("[native] resolved rebases=%zu binds=%zu stubs=%u of %u\n",stats.rebases,stats.binds,gs_used(),gs_capacity());
     if (guest.image.has_tls) {
         if (guest.image.tls_initializer_count) { LOG("[native] TLS constructors unsupported\n"); goto done; }
         void *template=malloc((size_t)guest.image.tls_size);

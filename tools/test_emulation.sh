@@ -117,6 +117,11 @@ xcrun clang -fobjc-arc -Wno-deprecated-declarations -Wall -Wextra -Werror \
     runtime/GuestModule.m runtime/GuestMemory.c runtime/GuestImage.c tests/test_guest_module.m \
     -o build/emulation/test_guest_module
 build/emulation/test_guest_module build/emulation/module_fixture
+xcrun clang -fobjc-arc -Wall -Wextra -Werror \
+    -O1 -g -fsanitize=address,undefined -Iruntime -framework Foundation \
+    runtime/GuestStubs.m runtime/GuestStubsArm64.S tests/test_guest_stubs.m \
+    -o build/emulation/test_guest_stubs
+build/emulation/test_guest_stubs
 python3 tests/test_publish.py
 python3 tests/test_arena_publish.py
 python3 tests/test_nib.py
