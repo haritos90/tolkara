@@ -3,6 +3,7 @@
 #include "HostDiagnostics.h"
 #include "DebuggerArena.h"
 #include "GuestStubs.h"
+#include "GuestLink.h"
 #include "NativeCodeMemory.h"
 #if TOLKARA_INTEGRATED_AUTH
 #import "LocalAuthorization.h"
@@ -117,6 +118,8 @@ static int guest_sigaction(int number,const struct sigaction *action,struct siga
     }
     return result;
 }
+// Carried libraries, for the life of the guest.
+static GuestLinkSet carried;
 static NativeCodeMemory external_quarantine;
 // Nothing to publish: an enabler outside the app prepared this.
 static NCPreparation prepare_externally(void *address, size_t size, void *context) {
@@ -298,12 +301,44 @@ static bool resolve(const char *symbol, int ordinal, bool weak, uint64_t *value,
     (void)context;
     const char *name = symbol[0]=='_' ? symbol+1 : symbol;
     void *pointer = hook(name);
+    // The application's own libraries answer before the system does: their code
+    // is the application's, and a name they export is theirs even where iPadOS
+    // happens to have one too.
+    uint64_t carried_value=0;
+    if (!pointer && gl_export(&carried,symbol,&carried_value)) { *value=carried_value; return true; }
     if (!pointer && ordinal>0 && guest.libraries[ordinal-1]) pointer=dlsym(guest.libraries[ordinal-1],name);
     if (!pointer) pointer=dlsym(RTLD_DEFAULT,name);
     // Nothing provides it: a stub, or null when weak.
     if (!pointer && !weak) pointer=gs_bind(symbol,gs_kind(symbol));
     if (!pointer && !weak) LOG("[native] unresolved %s ordinal=%d\n",symbol,ordinal);
     *value=(uintptr_t)pointer; return pointer || weak;
+}
+// Apple's ObjC SPI explicitly supports images created outside dyld.
+static bool register_objc_image(const char *name, const struct mach_header *header) {
+    static void (*map_images)(unsigned,const char *const *,const struct mach_header *const *);
+    static void (*load_image)(const char *,const struct mach_header *);
+    if (!map_images) map_images=dlsym(RTLD_DEFAULT,"_objc_map_images");
+    if (!load_image) load_image=dlsym(RTLD_DEFAULT,"_objc_load_image");
+    if (!map_images || !load_image) { LOG("[native] ObjC image registration unavailable\n"); return false; }
+    const char *names[]={name};
+    map_images(1,names,&header);
+    load_image(name,header);
+    return true;
+}
+// A carried library's own initializers, already relocated.
+static bool run_initializers(const GuestImage *image, uint64_t slide, const char *name,
+                             int argc, const char **argv, const char **env, const char **apple) {
+    const uint64_t *initializers=(const uint64_t *)(image->initializer_address+slide);
+    for (uint64_t i=0;i<image->initializer_count;i++) {
+        uintptr_t function=initializers[i];
+        if (!inside((void *)function,4) || (function&3)) {
+            LOG("[native] %s: initializer %llu is not in the arena (%p)\n",name,(unsigned long long)i,(void *)function);
+            return false;
+        }
+        LOG("[native] %s: initializer %llu native=%p\n",name,(unsigned long long)i,(void *)function);
+        ((void (*)(int,const char **,const char **,const char **))function)(argc,argv,env,apple);
+    }
+    return true;
 }
 bool ng_initialize(const char *path, const char *frameworks, const char *library_map, FILE *log, bool full_startup) {
     // One attempt per process: failure leaves hooks installed.
@@ -329,14 +364,32 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     }
     char error[2048]; bool ok=false; GFStats stats;
     if (!gi_load(path,&guest.image,error,sizeof error)) { LOG("[native] load failed: %s\n",error); goto done; }
+    // Carried libraries load as data too; missing ones become stubs.
+    if (!gl_load(&carried,&guest.image,path,error,sizeof error))
+        LOG("[native] carried libraries unavailable: %s\n",error);
+    gl_report(&carried,log);
     guest.base=guest.image.header_address;
     uint64_t end=guest.base;
     for(size_t i=0;i<guest.image.segment_count;i++) {
         GISegment *s=&guest.image.segments[i]; if(s->prot && s->address+s->size>end) end=s->address+s->size;
     }
     size_t span=(size_t)(end-guest.base);
-    LOG("[native] guest image span %zu bytes; the arena holds at most %u\n",span,(unsigned)NC_MAX_ARENA);
-    if (span>NC_MAX_ARENA) {
+    // One region for everything: a debugger prepares it once.
+    uint64_t offset[GL_MAX_LIBRARIES];
+    size_t total=span;
+    for (size_t i=0;i<carried.count;i++) {
+        GuestImage *library=&carried.libraries[i].image;
+        uint64_t library_end=library->header_address;
+        for (size_t j=0;j<library->segment_count;j++) {
+            GISegment *s=&library->segments[j];
+            if (s->prot && s->address+s->size>library_end) library_end=s->address+s->size;
+        }
+        offset[i]=total;
+        total+=(size_t)((library_end-library->header_address+GM_PAGE_SIZE-1)&~(uint64_t)(GM_PAGE_SIZE-1));
+    }
+    LOG("[native] guest image span %zu bytes, %zu with carried libraries; the arena holds at most %u\n",
+        span,total,(unsigned)NC_MAX_ARENA);
+    if (total>NC_MAX_ARENA) {
         LOG("[native] this image needs more executable memory than an arena may hold\n"); goto done;
     }
     bool arena_ready;
@@ -344,16 +397,16 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         [NSProcessInfo.processInfo.arguments containsObject:@"--external-authorization"];
     if(external) {
         // Ask an attached debugger first, then have it detach.
-        arena_ready=da_request_arena(&guest.arena,span,guest.log);
+        arena_ready=da_request_arena(&guest.arena,total,guest.log);
         if(arena_ready) (void)da_release_debugger(&guest.arena,guest.log);
-        else arena_ready=nc_create_managed(&guest.arena,span,prepare_externally,NULL,&external_quarantine);
+        else arena_ready=nc_create_managed(&guest.arena,total,prepare_externally,NULL,&external_quarantine);
     }
 #if TOLKARA_INTEGRATED_AUTH
     else if(atomic_load(&use_local_authorization) || [NSProcessInfo.processInfo.arguments containsObject:@"--local-native-authorization"])
-        arena_ready=nc_create_managed(&guest.arena,span,TKPrepareLocalArena,NULL,&local_quarantine);
+        arena_ready=nc_create_managed(&guest.arena,total,TKPrepareLocalArena,NULL,&local_quarantine);
 #endif
     else
-        arena_ready=nc_create(&guest.arena,span,publish,NULL);
+        arena_ready=nc_create(&guest.arena,total,publish,NULL);
     if (!arena_ready) { LOG("[native] arena preparation failed errno=%d; guest entry blocked\n",errno); goto done; }
     // A protection change can be reported and not granted.
     LOG("[native] arena protection %#x\n",hd_protection(guest.arena.executable));
@@ -361,6 +414,8 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         LOG("[native] the arena is not executable: nothing prepared it, or it did not survive detaching\n"); goto done;
     }
     guest.slide=(uintptr_t)guest.arena.executable-guest.base;
+    for (size_t i=0;i<carried.count;i++)
+        carried.libraries[i].slide=(uintptr_t)guest.arena.executable+offset[i]-carried.libraries[i].image.header_address;
     LOG("[native] arena ready base=%p slide=%#llx\n",guest.arena.executable,(unsigned long long)guest.slide);
     {
         NSData *data=[NSData dataWithContentsOfFile:@(library_map)];
@@ -386,6 +441,14 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     }
     if([NSProcessInfo.processInfo.arguments containsObject:@"--sample-native"]) signal_log_fd=open([[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/native-signal.log"] fileSystemRepresentation],O_WRONLY|O_CREAT|O_TRUNC,0600);
     shader_wait_pending=dlsym(RTLD_DEFAULT,"AKShaderWaitPending");
+    for (size_t i=0;i<carried.count;i++) {
+        GuestLibrary *library=&carried.libraries[i];
+        GFStats library_stats;
+        if (!gf_apply(&library->image,library->slide,resolve,NULL,&library_stats,error,sizeof error)) {
+            LOG("[native] %s fixups failed: %s\n",library->install_name,error); goto done;
+        }
+        LOG("[native] %s rebases=%zu binds=%zu\n",library->install_name,library_stats.rebases,library_stats.binds);
+    }
     if (!gf_apply(&guest.image,guest.slide,resolve,NULL,&stats,error,sizeof error)) { LOG("[native] fixups failed: %s\n",error); goto done; }
     LOG("[native] resolved rebases=%zu binds=%zu stubs=%u of %u\n",stats.rebases,stats.binds,gs_used(),gs_capacity());
     if (guest.image.has_tls) {
@@ -408,6 +471,23 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
             LOG("[native] segment protection failed: %s errno=%d\n",s->name,errno); goto done;
         }
     }
+    for (size_t i=0;i<carried.count;i++) {
+        GuestLibrary *library=&carried.libraries[i];
+        uint64_t base=library->image.header_address;
+        for (size_t j=0;j<library->image.memory.count;j++) {
+            GMPage *page=&library->image.memory.pages[j];
+            if (page->bytes && !nc_write(&guest.arena,(size_t)(page->address-base+offset[i]),page->bytes,GM_PAGE_SIZE)) {
+                LOG("[native] %s: cannot place page %#llx\n",library->install_name,(unsigned long long)page->address); goto done;
+            }
+        }
+        for (size_t j=0;j<library->image.segment_count;j++) {
+            GISegment *s=&library->image.segments[j]; if(!s->prot) continue;
+            if (mprotect((void *)(s->address+library->slide),s->size,s->prot & ((s->prot&GM_EXEC)?~GM_WRITE:~0u))) {
+                LOG("[native] %s: segment protection failed: %s errno=%d\n",library->install_name,s->name,errno); goto done;
+            }
+        }
+        gm_destroy(&library->image.memory);
+    }
     {
         uintptr_t initializer=guest.image.first_initializer+guest.slide;
         gm_destroy(&guest.image.memory);
@@ -416,18 +496,19 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         asprintf(&executable_argument,"executable_path=%s",guest.path);
         const char *argv[]={guest.path,NULL}, *env[]={NULL}, *apple[]={executable_argument,NULL};
         int argc=1;
+        // dyld order: a library's initializers before the client's.
+        for (size_t i=0;full_startup && i<carried.count;i++) {
+            GuestLibrary *library=&carried.libraries[i];
+            LOG("[native] registering %s\n",library->install_name);
+            if (!register_objc_image(library->path,(const struct mach_header *)(library->image.header_address+library->slide)) ||
+                !run_initializers(&library->image,library->slide,library->install_name,argc,argv,env,apple)) { ok=false; goto done; }
+        }
         ((void (*)(int,const char **,const char **,const char **))initializer)(argc,argv,env,apple);
         LOG("[native] first original initializer returned\n"); ok=true;
         if (full_startup) {
             // After the unpacking initializer has restored the code.
-            void (*map_images)(unsigned,const char *const *,const struct mach_header *const *)=dlsym(RTLD_DEFAULT,"_objc_map_images");
-            void (*load_image)(const char *,const struct mach_header *)=dlsym(RTLD_DEFAULT,"_objc_load_image");
-            if (!map_images || !load_image) { LOG("[native] ObjC image registration unavailable\n"); ok=false; goto done; }
-            const struct mach_header *header=guest.arena.executable;
-            const char *names[]={path};
             LOG("[native] registering original ObjC image\n");
-            map_images(1,names,&header);
-            load_image(path,header);
+            if (!register_objc_image(path,(const struct mach_header *)guest.arena.executable)) { ok=false; goto done; }
             LOG("[native] ObjC image registration returned\n");
             uint64_t *initializers=(uint64_t *)(guest.image.initializer_address+guest.slide);
             for(uint64_t i=1;i<guest.image.initializer_count;i++) {
