@@ -157,7 +157,11 @@ static bool load(FILE *f, GuestImage *image, uint32_t file_type, char *error, si
                 !within(info.dataoff, info.datasize, slice_size)) BAD("invalid export trie command");
             have_exports = true; export_offset = info.dataoff; image->export_size = info.datasize;
         } else if (lc.cmd == LC_DYLD_CHAINED_FIXUPS) {
+            struct linkedit_data_command info;
+            if (image->chained_fixups || lc.cmdsize < sizeof info || !read_at(f, slice + cursor, &info, sizeof info) ||
+                !within(info.dataoff, info.datasize, slice_size)) BAD("invalid chained fixups command");
             image->chained_fixups = true;
+            image->chained_offset = info.dataoff; image->chained_size = info.datasize;
         } else if (lc.cmd == LC_ENCRYPTION_INFO_64) {
             struct encryption_info_command_64 encryption;
             if (lc.cmdsize < sizeof encryption || !read_at(f, slice + cursor, &encryption, sizeof encryption)) BAD("invalid encryption info");

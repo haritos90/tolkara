@@ -17,6 +17,7 @@ typedef struct {
     uint32_t bind_size, lazy_bind_size, weak_bind_size, rebase_size;
     uint32_t bind_offset, lazy_bind_offset, weak_bind_offset, rebase_offset;
     uint32_t file_type, export_size;
+    uint32_t chained_offset, chained_size;   // LC_DYLD_CHAINED_FIXUPS payload
     unsigned char *exports;
     uint64_t header_address, initializer_address;
     uint64_t tls_address, tls_size, tls_descriptors, tls_descriptors_size, tls_initializer_count;

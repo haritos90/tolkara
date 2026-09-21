@@ -1,4 +1,6 @@
 #include "GuestFixups.h"
+#include <mach-o/fixup-chains.h>
+#include <stdint.h>
 #include <assert.h>
 #include <string.h>
 static bool resolve(const char *name, int ordinal, bool weak, uint64_t *value, void *context) {
@@ -17,6 +19,40 @@ static void setup(GuestImage *i, const uint8_t *r, size_t rn, const uint8_t *b, 
     uint64_t pointer = 0x100000800;
     assert(gm_populate(&i->memory, 0x100000000, &pointer, 8) == GM_OK);
 }
+// One page, one import, one chain, built by hand.
+static size_t chained_blob(uint8_t *out, uint16_t format) {
+    memset(out, 0, 128);
+    uint32_t header[7] = {0, 32, 64, 80, 1, DYLD_CHAINED_IMPORT, 0};
+    memcpy(out, header, sizeof header);
+    uint32_t starts[2] = {1, 8};                    // one segment, its info eight bytes on
+    memcpy(out + 32, starts, sizeof starts);
+    uint32_t size = 24;
+    uint16_t page_size = GM_PAGE_SIZE, page_count = 1, page_start = 0;
+    uint64_t segment_offset = 0;
+    memcpy(out + 40, &size, 4);
+    memcpy(out + 44, &page_size, 2);
+    memcpy(out + 46, &format, 2);
+    memcpy(out + 48, &segment_offset, 8);
+    memcpy(out + 60, &page_count, 2);
+    memcpy(out + 62, &page_start, 2);
+    uint32_t import = 1;                            // library ordinal one, name at zero
+    memcpy(out + 64, &import, 4);
+    memcpy(out + 80, "_sample", 8);
+    return 88;
+}
+static void chained_setup(GuestImage *i, uint16_t format, uint64_t first, uint64_t second) {
+    *i = (GuestImage){0}; i->segment_count = 1; i->dylib_count = 1;
+    i->segments[0] = (GISegment){.address=0x100000000, .size=GM_PAGE_SIZE, .file_size=GM_PAGE_SIZE, .prot=3};
+    assert(gm_map(&i->memory, 0x100000000, GM_PAGE_SIZE, 3, 7, false, false) == GM_OK);
+    i->header_address = 0x100000000; i->mapped_size = GM_PAGE_SIZE;
+    i->chained_fixups = true; i->chained_offset = 1024;
+    uint8_t blob[128];
+    i->chained_size = (uint32_t)chained_blob(blob, format);
+    assert(gm_populate(&i->memory, 0x100000400, blob, i->chained_size) == GM_OK);
+    assert(gm_populate(&i->memory, 0x100000000, &first, 8) == GM_OK);
+    assert(gm_populate(&i->memory, 0x100000008, &second, 8) == GM_OK);
+}
+
 int main(void) {
     GuestImage i; GFStats stats; char error[256]; uint64_t value;
     const uint8_t r[] = {0x11,0x20,0,0x51,0};
@@ -56,5 +92,35 @@ int main(void) {
         assert(!gf_apply(&i,0,resolve,NULL,&stats,error,sizeof error)); gi_destroy(&i); }
     setup(&i,r,sizeof r,b,sizeof b-1);
     assert(!gf_apply(&i,0,resolve,NULL,&stats,error,sizeof error)); gi_destroy(&i);
+    {
+        // A rebase to the next slot, then a bind.
+        uint64_t rebase = 0x100000800ULL | (2ULL << 51), bind = (1ULL << 63) | (8ULL << 24);
+        chained_setup(&i, DYLD_CHAINED_PTR_64, rebase, bind);
+        assert(gf_apply(&i, 0x200000, resolve, NULL, &stats, error, sizeof error));
+        assert(stats.rebases == 1 && stats.binds == 1);
+        assert(gm_read(&i.memory, 0x100000000, &value, 8) == GM_OK && value == 0x100200800);
+        assert(gm_read(&i.memory, 0x100000008, &value, 8) == GM_OK && value == 0x12340008);
+        gi_destroy(&i);
+
+        // The same chain written as offsets from the image base.
+        chained_setup(&i, DYLD_CHAINED_PTR_64_OFFSET, 0x800ULL | (2ULL << 51), bind);
+        assert(gf_apply(&i, 0x200000, resolve, NULL, &stats, error, sizeof error));
+        assert(gm_read(&i.memory, 0x100000000, &value, 8) == GM_OK && value == 0x100200800);
+        gi_destroy(&i);
+
+        // Malformed chains are refused rather than followed.
+        chained_setup(&i, 99, rebase, bind);
+        assert(!gf_apply(&i, 0, resolve, NULL, &stats, error, sizeof error) && strstr(error, "pointer format"));
+        gi_destroy(&i);
+        chained_setup(&i, DYLD_CHAINED_PTR_64, rebase, (1ULL << 63) | 5);
+        assert(!gf_apply(&i, 0, resolve, NULL, &stats, error, sizeof error) && strstr(error, "import 5"));
+        gi_destroy(&i);
+        // A chain that walks off the end of the image.
+        chained_setup(&i, DYLD_CHAINED_PTR_64, 4094ULL << 51, bind);
+        uint64_t tail = 1ULL << 51;
+        assert(gm_populate(&i.memory, 0x100003FF8, &tail, 8) == GM_OK);
+        assert(!gf_apply(&i, 0, resolve, NULL, &stats, error, sizeof error) && strstr(error, "outside guest memory"));
+        gi_destroy(&i);
+    }
     puts("PASS: Mach-O pointer relocation, import binding, signed addends, malformed fixup bounds");
 }

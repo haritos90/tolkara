@@ -107,6 +107,14 @@ build/emulation/test_guest_wait
 build/emulation/test_guest_wait_runloop
 "${CC[@]}" runtime/GuestMemory.c runtime/GuestImage.c runtime/GuestFixups.c tools/guest_probe.c -o build/emulation/guest_probe_sanitized
 python3 tests/test_image.py build/emulation/guest_probe_sanitized
+# An image with chained fixups: the probe walks the chains.
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -x c -o build/emulation/chained_fixture - <<'C'
+#include <stdio.h>
+static const char *message = "hello";
+const void *pointers[] = {&message, (const void *)&puts, &pointers[0]};
+int main(void) { puts(message); return pointers[2] != 0; }
+C
+build/emulation/guest_probe_sanitized build/emulation/chained_fixture --validate-fixups > /dev/null
 python3 tests/test_package.py
 python3 tests/test_profile.py
 xcrun clang -arch arm64 -x c -o build/emulation/module_fixture - <<'C'
