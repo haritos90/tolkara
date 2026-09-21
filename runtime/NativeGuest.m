@@ -1,5 +1,7 @@
 #import <Foundation/Foundation.h>
 #include "NativeGuest.h"
+#include "HostDiagnostics.h"
+#include "DebuggerArena.h"
 #include "NativeCodeMemory.h"
 #if TOLKARA_INTEGRATED_AUTH
 #import "LocalAuthorization.h"
@@ -34,6 +36,11 @@ bool ng_use_local_authorization(void) {
 #else
     return false;
 #endif
+}
+static atomic_bool use_external_authorization;
+bool ng_use_external_authorization(void) {
+    if(atomic_load(&initialization_attempted)) return false;
+    atomic_store(&use_external_authorization,true);return true;
 }
 
 static struct {
@@ -108,6 +115,13 @@ static int guest_sigaction(int number,const struct sigaction *action,struct siga
         if(action) guest_signal_actions[number]=*action;
     }
     return result;
+}
+static NativeCodeMemory external_quarantine;
+// Nothing to publish: an enabler outside the app prepared this.
+static NCPreparation prepare_externally(void *address, size_t size, void *context) {
+    (void)context;
+    LOG("[native] arena prepared outside this app address=%p size=%zu\n",address,size);
+    return NC_PREPARED;
 }
 static bool publish(void *address, size_t size, void *context) {
     (void)context;
@@ -309,13 +323,26 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         GISegment *s=&guest.image.segments[i]; if(s->prot && s->address+s->size>end) end=s->address+s->size;
     }
     bool arena_ready;
+    bool external=atomic_load(&use_external_authorization) ||
+        [NSProcessInfo.processInfo.arguments containsObject:@"--external-authorization"];
+    if(external) {
+        // Ask an attached debugger first, then have it detach.
+        arena_ready=da_request_arena(&guest.arena,(size_t)(end-guest.base),guest.log);
+        if(arena_ready) (void)da_release_debugger(&guest.arena,guest.log);
+        else arena_ready=nc_create_managed(&guest.arena,(size_t)(end-guest.base),prepare_externally,NULL,&external_quarantine);
+    }
 #if TOLKARA_INTEGRATED_AUTH
-    if(atomic_load(&use_local_authorization) || [NSProcessInfo.processInfo.arguments containsObject:@"--local-native-authorization"])
+    else if(atomic_load(&use_local_authorization) || [NSProcessInfo.processInfo.arguments containsObject:@"--local-native-authorization"])
         arena_ready=nc_create_managed(&guest.arena,(size_t)(end-guest.base),TKPrepareLocalArena,NULL,&local_quarantine);
-    else
 #endif
+    else
         arena_ready=nc_create(&guest.arena,(size_t)(end-guest.base),publish,NULL);
     if (!arena_ready) { LOG("[native] arena preparation failed errno=%d; guest entry blocked\n",errno); goto done; }
+    // A protection change can be reported and not granted.
+    LOG("[native] arena protection %#x\n",hd_protection(guest.arena.executable));
+    if (external && !hd_is_executable(guest.arena.executable)) {
+        LOG("[native] the arena is not executable: nothing prepared it, or it did not survive detaching\n"); goto done;
+    }
     guest.slide=(uintptr_t)guest.arena.executable-guest.base;
     LOG("[native] arena ready base=%p slide=%#llx\n",guest.arena.executable,(unsigned long long)guest.slide);
     {

@@ -6,3 +6,5 @@
 bool ng_initialize(const char *path, const char *frameworks, const char *library_map, FILE *log, bool full_startup);
 // Select our integrated helper before the process's one permitted startup.
 bool ng_use_local_authorization(void);
+// Prepared outside the app; accepted only if really executable.
+bool ng_use_external_authorization(void);
