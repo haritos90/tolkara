@@ -4,6 +4,8 @@
 #import "GuestImage.h"
 #import "MemoryProbe.h"
 #import "HostExecutionProbe.h"
+#import "HostDiagnostics.h"
+#import "DebuggerArena.h"
 #import "NativeGuest.h"
 #import "ShaderPauseProbe.h"
 #import "SignedCodeProbe.h"
@@ -21,6 +23,8 @@
 @property(nonatomic, strong) UIWindow *window;
 @property(nonatomic, strong) UILabel *status;
 @property(nonatomic, strong) UIButton *importButton;
+@property(nonatomic, strong) UILabel *debugPanel;
+@property(nonatomic) BOOL debugInfo;
 @property(nonatomic) BOOL consumedImportArgument;
 #if TOLKARA_INTEGRATED_AUTH
 @property(nonatomic,strong) TKLocalAuthorization *localAuthorization;
@@ -80,6 +84,37 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
         [self.importButton.centerXAnchor constraintEqualToAnchor:controller.view.centerXAnchor],
     ]];
     self.window.rootViewController = controller;
+    // One switch: start with what a tester needs, or clean.
+    self.debugInfo=[NSUserDefaults.standardUserDefaults boolForKey:@"TolkaraDebugInfo"];
+    self.debugPanel=[UILabel new];
+    self.debugPanel.numberOfLines=0;
+    self.debugPanel.font=[UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    self.debugPanel.textColor=UIColor.secondaryLabelColor;
+    self.debugPanel.hidden=!self.debugInfo;
+    self.debugPanel.translatesAutoresizingMaskIntoConstraints=NO;
+    [controller.view addSubview:self.debugPanel];
+    UISwitch *debugToggle=[UISwitch new];
+    debugToggle.on=self.debugInfo;
+    [debugToggle addTarget:self action:@selector(debugInfoChanged:) forControlEvents:UIControlEventValueChanged];
+    UILabel *debugTitle=[UILabel new];
+    debugTitle.text=@"Debug info";
+    debugTitle.font=[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    UIStackView *debugRow=[[UIStackView alloc] initWithArrangedSubviews:@[debugTitle,debugToggle]];
+    debugRow.spacing=8;
+    debugRow.alignment=UIStackViewAlignmentCenter;
+    debugRow.translatesAutoresizingMaskIntoConstraints=NO;
+    [controller.view addSubview:debugRow];
+    // The panel gives way to the status text.
+    [self.debugPanel setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                                     forAxis:UILayoutConstraintAxisVertical];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.debugPanel.bottomAnchor constraintLessThanOrEqualToAnchor:self.status.topAnchor constant:-8],
+        [self.debugPanel.topAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.topAnchor constant:16],
+        [self.debugPanel.leadingAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.leadingAnchor constant:32],
+        [self.debugPanel.trailingAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.trailingAnchor constant:-32],
+        [debugRow.bottomAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.bottomAnchor constant:-24],
+        [debugRow.centerXAnchor constraintEqualToAnchor:controller.view.centerXAnchor],
+    ]];
 #if TOLKARA_INTEGRATED_AUTH
     (void)[TKEnrollmentImport prepare];
     self.localAuthorization=[TKLocalAuthorization new];
@@ -99,7 +134,7 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
     setup.translatesAutoresizingMaskIntoConstraints=NO;
     [controller.view addSubview:setup];
     [NSLayoutConstraint activateConstraints:@[
-        [setup.bottomAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.bottomAnchor constant:-24],
+        [setup.bottomAnchor constraintEqualToAnchor:debugRow.topAnchor constant:-12],
         [setup.centerXAnchor constraintEqualToAnchor:controller.view.centerXAnchor],
     ]];
 #endif
@@ -218,9 +253,64 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
     self.status.text = ok ? (fullStartup ? @"App closed." : @"Original client first initializer returned.") : @"Native startup stopped. See runtime log.";
     UIApplication.sharedApplication.idleTimerDisabled = NO;
     // Runtime callbacks retain this log for the life of the guest.
+    [self refreshDebugPanel];
+}
+- (NSString *)debugMarker {
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/debug-info-running"];
+}
+- (void)debugInfoChanged:(UISwitch *)sender {
+    self.debugInfo=sender.isOn;
+    [NSUserDefaults.standardUserDefaults setBool:self.debugInfo forKey:@"TolkaraDebugInfo"];
+    self.debugPanel.hidden=!self.debugInfo;
+    // The checks belong at the start of a session.
+    self.debugPanel.text=self.debugInfo?@"Debug info starts with the app. Close and reopen it.":@"";
+}
+// A marker: the last attempt never returned, so switch off.
+- (void)collectDebugInfo {
+    NSFileManager *files=NSFileManager.defaultManager;
+    if([files fileExistsAtPath:self.debugMarker]) {
+        [files removeItemAtPath:self.debugMarker error:NULL];
+        self.debugInfo=NO;
+        [NSUserDefaults.standardUserDefaults setBool:NO forKey:@"TolkaraDebugInfo"];
+        self.debugPanel.text=@"Debug info switched off: the last attempt did not return.";
+        return;
+    }
+    [@"" writeToFile:self.debugMarker atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    NSString *directory=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+    FILE *log=fopen([directory stringByAppendingPathComponent:@"diagnostics.log"].fileSystemRepresentation,"w");
+    HostDiagnostics report;
+    hd_collect(&report,log!=NULL,log);
+    char text[4096];
+    hd_format(&report,text,sizeof text);
+    NSMutableString *panel=[NSMutableString stringWithUTF8String:text];
+    // Only where something already prepared this process: it traps.
+    if(report.debugged) {
+        NativeCodeMemory arena={0};
+        BOOL provided=da_request_arena(&arena,(size_t)getpagesize()*64,log);
+        [panel appendFormat:@"Debugger arena: %@\n",provided?
+            (hd_is_executable(arena.executable)?@"provided":@"provided, not executable"):@"refused"];
+        // This session's guest memory can only come from that debugger.
+        (void)ng_use_external_authorization();
+    }
+    if(log) fclose(log);
+    [files removeItemAtPath:self.debugMarker error:NULL];
+    [panel writeToFile:[directory stringByAppendingPathComponent:@"diagnostics.txt"]
+        atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    self.debugPanel.text=panel;
+}
+- (void)refreshDebugPanel {
+    if(!self.debugInfo) return;
+    NSString *contents=[NSString stringWithContentsOfFile:
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/native-guest.log"]
+        encoding:NSUTF8StringEncoding error:NULL];
+    if(!contents.length) return;
+    NSArray<NSString *> *lines=[contents componentsSeparatedByString:@"\n"];
+    NSUInteger tail=MIN((NSUInteger)16,lines.count);
+    self.debugPanel.text=[[lines subarrayWithRange:NSMakeRange(lines.count-tail,tail)] componentsJoinedByString:@"\n"];
 }
 
 - (void)startGuest {
+    if(self.debugInfo) [self collectDebugInfo];
     NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
     self.importButton.hidden=NO;
     if([arguments containsObject:@"--local-shader-probe"]) {
