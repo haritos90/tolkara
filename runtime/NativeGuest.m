@@ -419,8 +419,18 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         LOG("[native] this image needs more executable memory than an arena may hold\n"); goto done;
     }
     bool arena_ready;
+    bool local=false;
+#if TOLKARA_INTEGRATED_AUTH
+    local=atomic_load(&use_local_authorization) ||
+        [NSProcessInfo.processInfo.arguments containsObject:@"--local-native-authorization"];
+#endif
     bool external=atomic_load(&use_external_authorization) ||
         [NSProcessInfo.processInfo.arguments containsObject:@"--external-authorization"];
+    // Already prepared outside: the arena comes from there.
+    if(!external && !local && hd_may_run_unsigned_code()) {
+        LOG("[native] this process may already run unsigned code; its arena comes from whatever prepared it\n");
+        external=true;
+    }
     if(external) {
         // Ask an attached debugger first, then have it detach.
         arena_ready=da_request_arena(&guest.arena,total,guest.log);
@@ -428,7 +438,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         else arena_ready=nc_create_managed(&guest.arena,total,prepare_externally,NULL,&external_quarantine);
     }
 #if TOLKARA_INTEGRATED_AUTH
-    else if(atomic_load(&use_local_authorization) || [NSProcessInfo.processInfo.arguments containsObject:@"--local-native-authorization"])
+    else if(local)
         arena_ready=nc_create_managed(&guest.arena,total,TKPrepareLocalArena,NULL,&local_quarantine);
 #endif
     else

@@ -26,6 +26,8 @@ void hd_collect(HostDiagnostics *report, bool probe_execution, FILE *log);
 size_t hd_format(const HostDiagnostics *report, char *out, size_t size);
 // Whether this process may run unsigned code (CS_DEBUGGED).
 bool hd_may_run_unsigned_code(void);
+// Whether a debugger is attached now, not merely was.
+bool hd_debugger_attached(void);
 // Protection of the mapping at this address, 0 when unknown.
 unsigned hd_protection(const void *address);
 // Whether that mapping really is executable now.

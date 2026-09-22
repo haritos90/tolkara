@@ -236,6 +236,12 @@ static NSString *AppDisplayName(void) {
         setenv("TOLKARA_LOCAL_SHADERS_ONLY","1",1);
     self.playButton.hidden=YES;self.importButton.hidden=YES;self.chooseButton.hidden=YES;
     UIApplication.sharedApplication.idleTimerDisabled=YES;
+    // Already granted from outside: nothing left to prepare.
+    if(hd_may_run_unsigned_code()) {
+        self.status.text=[NSString stringWithFormat:@"Starting %@…\nKeep the app open. Startup currently takes a few minutes.",AppDisplayName()];
+        [self performSelector:@selector(startChosenApplication) withObject:nil afterDelay:0];
+        return;
+    }
     self.status.text=@"Preparing local launch…";
     [self.localAuthorization startAndPrepareLocalAuthorization:^(NSString *report) {
         [report writeToFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/local-game-setup.txt"]

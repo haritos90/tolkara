@@ -12,7 +12,8 @@
 #define DA_PROTOCOL 0
 #endif
 
-bool da_debugger_present(void) { return hd_may_run_unsigned_code(); }
+// Attached now, not merely prepared: that flag survives the detach.
+bool da_debugger_present(void) { return hd_debugger_attached(); }
 
 bool da_plausible_region(const void *address) {
     uintptr_t value = (uintptr_t)address;

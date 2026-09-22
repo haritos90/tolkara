@@ -27,7 +27,7 @@ bool hd_may_run_unsigned_code(void) {
     if (csops(getpid(), CS_OPS_STATUS, &flags, sizeof flags)) return false;
     return (flags & CS_DEBUGGED) != 0;
 }
-static bool traced(void) {
+bool hd_debugger_attached(void) {
     struct kinfo_proc process;
     size_t size = sizeof process;
     int name[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
@@ -58,7 +58,7 @@ bool hd_is_executable(const void *address) {
 }
 void hd_collect(HostDiagnostics *report, bool probe_execution, FILE *log) {
     memset(report, 0, sizeof *report);
-    report->debugger_attached = traced();
+    report->debugger_attached = hd_debugger_attached();
     uint32_t flags = 0;
     if (!csops(getpid(), CS_OPS_STATUS, &flags, sizeof flags)) {
         report->code_signing_known = true;
