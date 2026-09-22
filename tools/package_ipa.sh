@@ -1,0 +1,47 @@
+#!/bin/bash
+# The unsigned .ipa a sideloader signs with your Apple ID.
+# usage: tools/package_ipa.sh [output.ipa]        (default: Tolkara-unsigned.ipa)
+# The application is chosen on the iPad.
+# Build from source instead: tools/install.sh.
+set -euo pipefail
+OUT=${1:-Tolkara-unsigned.ipa}
+case "$OUT" in /*) ;; *) OUT="$PWD/$OUT";; esac
+cd "$(dirname "$0")/.."
+export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
+mkdir -p logs build
+LOG=logs/ipa-$(date +%Y%m%d-%H%M%S).log
+tools/generate.sh
+# No extension: a free Apple ID cannot sign one.
+# GENERIC: one adapter per framework, no executable.
+# By target: schemes need a destination the SDK alone lacks.
+xcodebuild -project Tolkara.xcodeproj -target TolkaraDiagnostics -configuration Release \
+    -sdk iphoneos -arch arm64 SYMROOT=build/unsigned NATIVE_GUEST_SHIMS=GENERIC \
+    INFOPLIST_KEY_CFBundleDisplayName=Tolkara \
+    CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+    build > "$LOG" 2>&1 \
+    || { grep -E "error:" "$LOG" | head -20; echo "BUILD FAILED -> $LOG"; exit 1; }
+
+APP=build/unsigned/Release-iphoneos/TolkaraDiagnostics.app
+[ -d "$APP" ] || { echo "Build did not produce $APP -> $LOG"; exit 1; }
+# No identity of ours: unsigned, no profile embedded.
+# No pipe: an early reader would hide the answer.
+PROFILE=$(find "$APP" -name embedded.mobileprovision -print -quit)
+[ -z "$PROFILE" ] || { echo "Refusing to package: the build embeds a provisioning profile."; exit 1; }
+for bundle in "$APP" "$APP"/PlugIns/*.appex; do
+    [ -d "$bundle" ] || continue
+    # codesign exits non-zero when unsigned, as expected.
+    TEAM=$(codesign -dvv "$bundle" 2>&1 | sed -n 's/^TeamIdentifier=//p' || true)
+    case "${TEAM:-not set}" in
+        ""|"not set") ;;
+        *) echo "Refusing to package: $(basename "$bundle") is signed with team $TEAM."; exit 1;;
+    esac
+done
+
+# An .ipa is a zip with Payload/.
+rm -rf build/Payload "$OUT"
+mkdir build/Payload
+cp -R "$APP" build/Payload/
+( cd build && zip -qry "$OUT" Payload )
+rm -rf build/Payload
+echo "Unsigned build: $OUT"
+echo "Sideload it, enable JIT for it, then choose the application folder in the app."

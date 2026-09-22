@@ -2,6 +2,7 @@
 # Build the Tolkara app with your own signing team and install it on your iPad.
 # usage: tools/install.sh            (settings from local.env; see local.env.example)
 # Installing replaces the app under the same bundle ID and keeps its data.
+# For an unsigned .ipa to sideload instead: tools/package_ipa.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
