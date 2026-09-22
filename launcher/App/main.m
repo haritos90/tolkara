@@ -23,13 +23,16 @@
 @property(nonatomic, strong) UIWindow *window;
 @property(nonatomic, strong) UILabel *status;
 @property(nonatomic, strong) UIButton *importButton;
+@property(nonatomic, strong) UIButton *chooseButton;
+@property(nonatomic, strong) UIButton *playButton;
 @property(nonatomic, strong) UILabel *debugPanel;
 @property(nonatomic) BOOL debugInfo;
 @property(nonatomic) BOOL debugPrepared;
 @property(nonatomic) BOOL consumedImportArgument;
+@property(nonatomic) BOOL choosingApplication;
+@property(nonatomic) BOOL launchReady;
 #if TOLKARA_INTEGRATED_AUTH
 @property(nonatomic,strong) TKLocalAuthorization *localAuthorization;
-@property(nonatomic,strong) UIButton *playButton;
 @property(nonatomic) BOOL localGameAttempted;
 #endif
 @end
@@ -52,7 +55,65 @@ static NSString *ProfileString(NSString *key) {
     if(![value isKindOfClass:NSString.class] || ![value length] || [value hasPrefix:@"/"] || [[value pathComponents] containsObject:@".."]) return nil;
     return value;
 }
-static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"imported app"; }
+// Relative to Documents: a reinstall moves the container.
+static NSString *const ApplicationFolderKey=@"TolkaraApplicationFolder";
+static NSString *DocumentsDirectory(void) {
+    return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+}
+// Where a path sits under Documents, or nil.
+static NSString *UnderDocuments(NSString *path) {
+    NSString *root=DocumentsDirectory().stringByResolvingSymlinksInPath;
+    NSString *resolved=path.stringByResolvingSymlinksInPath;
+    if([resolved isEqual:root]) return @".";
+    if(![resolved hasPrefix:[root stringByAppendingString:@"/"]]) return nil;
+    return [resolved substringFromIndex:root.length+1];
+}
+// The bundle a folder holds, or the folder itself.
+static NSString *ApplicationBundle(NSString *folder) {
+    if([folder.pathExtension isEqual:@"app"]) return folder;
+    NSMutableArray<NSString *> *bundles=[NSMutableArray array];
+    for(NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:folder error:NULL])
+        if([name.pathExtension isEqual:@"app"]) [bundles addObject:[folder stringByAppendingPathComponent:name]];
+    return bundles.count==1?bundles.firstObject:nil;
+}
+// The executable a bundle names.
+static NSString *ApplicationExecutable(NSString *folder) {
+    NSString *bundle=ApplicationBundle(folder);
+    if(!bundle) return nil;
+    id name=[NSDictionary dictionaryWithContentsOfFile:[bundle stringByAppendingPathComponent:@"Contents/Info.plist"]][@"CFBundleExecutable"];
+    if(![name isKindOfClass:NSString.class] || ![name length] || [name containsString:@"/"])
+        name=bundle.lastPathComponent.stringByDeletingPathExtension;
+    NSString *executable=[bundle stringByAppendingPathComponent:[@"Contents/MacOS" stringByAppendingPathComponent:name]];
+    BOOL directory=NO;
+    return [NSFileManager.defaultManager fileExistsAtPath:executable isDirectory:&directory] && !directory ? executable : nil;
+}
+static NSString *ChosenApplicationFolder(void) {
+    NSString *relative=[NSUserDefaults.standardUserDefaults stringForKey:ApplicationFolderKey];
+    // Relative paths only: the selection stays in Documents.
+    if(![relative length] || [relative hasPrefix:@"/"] || [relative.pathComponents containsObject:@".."]) return nil;
+    return [DocumentsDirectory() stringByAppendingPathComponent:relative];
+}
+// What a full startup runs: the application a profile names where the build
+// carries one and its files are there, and otherwise the one chosen on the
+// device. The folder holding the bundle is the working directory either way.
+static NSString *StartupExecutable(NSString **workingDirectory) {
+    NSString *documents=DocumentsDirectory();
+    NSString *relativeDirectory=ProfileString(@"workingDirectory"), *relativeExecutable=ProfileString(@"executable");
+    NSString *directory=relativeDirectory?[documents stringByAppendingPathComponent:relativeDirectory]:nil;
+    NSString *executable=directory&&relativeExecutable?[directory stringByAppendingPathComponent:relativeExecutable]:nil;
+    if(!(executable && [NSFileManager.defaultManager fileExistsAtPath:executable])) {
+        directory=ChosenApplicationFolder();
+        executable=directory?ApplicationExecutable(directory):nil;
+    }
+    if(executable && workingDirectory) *workingDirectory=directory;
+    return executable;
+}
+static NSString *AppDisplayName(void) {
+    NSString *name=ProfileString(@"name");
+    if(name) return name;
+    NSString *bundle=ChosenApplicationFolder()?ApplicationBundle(ChosenApplicationFolder()):nil;
+    return bundle?bundle.lastPathComponent.stringByDeletingPathExtension:@"imported app";
+}
 
 @implementation AKHostSceneDelegate
 - (UISceneWindowingControlStyle *)preferredWindowingControlStyleForScene:(UIWindowScene *)scene API_AVAILABLE(ios(26.0)) {
@@ -84,6 +145,23 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
         [self.importButton.topAnchor constraintEqualToAnchor:self.status.bottomAnchor constant:24],
         [self.importButton.centerXAnchor constraintEqualToAnchor:controller.view.centerXAnchor],
     ]];
+    // An application is a folder of files, not one executable.
+    self.chooseButton=[UIButton buttonWithType:UIButtonTypeSystem];
+    [self.chooseButton addTarget:self action:@selector(chooseApplication) forControlEvents:UIControlEventTouchUpInside];
+    self.chooseButton.translatesAutoresizingMaskIntoConstraints=NO;
+    [controller.view addSubview:self.chooseButton];
+    self.playButton=[UIButton buttonWithType:UIButtonTypeSystem];
+    [self.playButton addTarget:self action:@selector(launchApplication) forControlEvents:UIControlEventTouchUpInside];
+    self.playButton.translatesAutoresizingMaskIntoConstraints=NO;
+    self.playButton.hidden=YES;
+    [controller.view addSubview:self.playButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.chooseButton.topAnchor constraintEqualToAnchor:self.importButton.bottomAnchor constant:16],
+        [self.chooseButton.centerXAnchor constraintEqualToAnchor:controller.view.centerXAnchor],
+        [self.playButton.topAnchor constraintEqualToAnchor:self.chooseButton.bottomAnchor constant:24],
+        [self.playButton.centerXAnchor constraintEqualToAnchor:controller.view.centerXAnchor],
+    ]];
+    [self refreshLaunchControl];
     self.window.rootViewController = controller;
     // One switch: start with what a tester needs, or clean.
     self.debugInfo=[NSUserDefaults.standardUserDefaults boolForKey:@"TolkaraDebugInfo"];
@@ -119,16 +197,6 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
 #if TOLKARA_INTEGRATED_AUTH
     (void)[TKEnrollmentImport prepare];
     self.localAuthorization=[TKLocalAuthorization new];
-    self.playButton=[UIButton buttonWithType:UIButtonTypeSystem];
-    [self.playButton setTitle:[@"Play " stringByAppendingString:AppDisplayName()] forState:UIControlStateNormal];
-    [self.playButton addTarget:self action:@selector(launchLocalGame) forControlEvents:UIControlEventTouchUpInside];
-    self.playButton.translatesAutoresizingMaskIntoConstraints=NO;
-    self.playButton.hidden=YES;
-    [controller.view addSubview:self.playButton];
-    [NSLayoutConstraint activateConstraints:@[
-        [self.playButton.topAnchor constraintEqualToAnchor:self.importButton.bottomAnchor constant:24],
-        [self.playButton.centerXAnchor constraintEqualToAnchor:controller.view.centerXAnchor],
-    ]];
     UIButton *setup=[UIButton buttonWithType:UIButtonTypeSystem];
     [setup setTitle:@"Local launch setup…" forState:UIControlStateNormal];
     [setup addTarget:self action:@selector(localLaunchSetup) forControlEvents:UIControlEventTouchUpInside];
@@ -144,6 +212,19 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
     // main-queue block that never returns would wedge the main dispatch queue.
     [self performSelector:@selector(startGuest) withObject:nil afterDelay:0];
 }
+- (void)launchApplication {
+#if TOLKARA_INTEGRATED_AUTH
+    [self launchLocalGame];
+#else
+    // The arena comes from whatever prepared this process.
+    self.playButton.hidden=YES; self.chooseButton.hidden=YES; self.importButton.hidden=YES;
+    UIApplication.sharedApplication.idleTimerDisabled=YES;
+    self.status.text=[NSString stringWithFormat:@"Starting %@…\nKeep the app open. Startup currently takes a few minutes.",AppDisplayName()];
+    // Enter from a timer callout, never a dispatch block.
+    [self performSelector:@selector(startChosenApplication) withObject:nil afterDelay:0];
+#endif
+}
+- (void)startChosenApplication { [self runNativeGame:YES]; }
 #if TOLKARA_INTEGRATED_AUTH
 - (void)launchLocalGame {
     if(self.localGameAttempted) {self.status.text=@"Close and reopen the app to start a new session.";return;}
@@ -153,7 +234,7 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
     setenv("TOLKARA_WAIT_FOR_MISSING_SHADERS","1",1);
     if([NSProcessInfo.processInfo.arguments containsObject:@"--local-shaders-only"])
         setenv("TOLKARA_LOCAL_SHADERS_ONLY","1",1);
-    self.playButton.hidden=YES;self.importButton.hidden=YES;
+    self.playButton.hidden=YES;self.importButton.hidden=YES;self.chooseButton.hidden=YES;
     UIApplication.sharedApplication.idleTimerDisabled=YES;
     self.status.text=@"Preparing local launch…";
     [self.localAuthorization startAndPrepareLocalAuthorization:^(NSString *report) {
@@ -193,16 +274,54 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
     [self.window.rootViewController presentViewController:alert animated:YES completion:nil];
 }
 #endif
+// Nothing to press until an application is selected and startable.
+- (void)refreshLaunchControl {
+    NSString *executable=StartupExecutable(NULL);
+    [self.playButton setTitle:[@"Play " stringByAppendingString:AppDisplayName()] forState:UIControlStateNormal];
+    [self.chooseButton setTitle:executable?@"Change application folder…":@"Choose application folder…"
+                       forState:UIControlStateNormal];
+    self.playButton.hidden=!self.launchReady || executable==nil;
+}
+- (void)chooseApplication {
+    UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc]
+        initForOpeningContentTypes:@[UTTypeFolder,UTTypeApplicationBundle] asCopy:NO];
+    picker.directoryURL=[NSURL fileURLWithPath:DocumentsDirectory() isDirectory:YES];
+    picker.delegate=self;
+    self.choosingApplication=YES;
+    [self.window.rootViewController presentViewController:picker animated:YES completion:nil];
+}
+// The folder is the working directory, the bundle the executable.
+- (void)selectApplicationFolder:(NSURL *)url {
+    NSString *relative=UnderDocuments(url.path);
+    if(!relative) {
+        self.status.text=@"Copy the application's folder into Tolkara's Documents folder, then choose it here.";
+        return;
+    }
+    NSString *folder=[DocumentsDirectory() stringByAppendingPathComponent:relative];
+    NSString *executable=ApplicationExecutable(folder);
+    if(!executable) {
+        self.status.text=@"That folder holds no single macOS application bundle.";
+        return;
+    }
+    [NSUserDefaults.standardUserDefaults setObject:relative forKey:ApplicationFolderKey];
+    [self refreshLaunchControl];
+    self.status.text=[NSString stringWithFormat:@"%@ selected.\n%@",AppDisplayName(),
+        UnderDocuments(executable)?:executable.lastPathComponent];
+}
 - (NSString *)moduleRoot { return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/GuestModules"]; }
 - (void)importModule {
     UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeItem] asCopy:NO];
     picker.delegate=self;
     [self.window.rootViewController presentViewController:picker animated:YES completion:nil];
 }
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    (void)controller; self.choosingApplication=NO;
+}
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     (void)controller;
     NSURL *url=urls.firstObject;
-    if (!url) return;
+    if (!url) { self.choosingApplication=NO; return; }
+    if (self.choosingApplication) { self.choosingApplication=NO; [self selectApplicationFolder:url]; return; }
     BOOL scoped=[url startAccessingSecurityScopedResource];
     self.importButton.enabled=NO;
     self.status.text=@"Verifying and importing original executable…";
@@ -235,19 +354,21 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
     NSString *path = guest_module_selected(self.moduleRoot,NULL);
     NSString *map = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"Guest/libraries.json"];
     if (fullStartup) {
-        NSString *relativeDirectory=ProfileString(@"workingDirectory"), *relativeExecutable=ProfileString(@"executable");
-        NSString *game = relativeDirectory ? [directory stringByAppendingPathComponent:relativeDirectory] : nil;
-        NSString *original = game && relativeExecutable ? [game stringByAppendingPathComponent:relativeExecutable] : nil;
-        if (original && [NSFileManager.defaultManager fileExistsAtPath:original]) {
+        NSString *game=nil, *original=StartupExecutable(&game);
+        if (original) {
             path = original;
+            fprintf(log,"[host] app executable=%s\n",original.fileSystemRepresentation);
             if (chdir(game.fileSystemRepresentation)) fprintf(log,"[host] app working directory failed: %s\n",strerror(errno));
             else fprintf(log,"[host] app working directory=%s\n",game.fileSystemRepresentation);
         }
     }
     if (!path) {
-        self.status.text=@"Import the original executable before running the development loader.";
+        self.status.text=fullStartup?@"Choose the application's folder before starting it.":
+            @"Import the original executable before running the development loader.";
         UIApplication.sharedApplication.idleTimerDisabled=NO;
         self.importButton.hidden=NO;
+        self.chooseButton.hidden=NO;
+        [self refreshLaunchControl];
         return;
     }
     BOOL ok = ng_initialize(path.fileSystemRepresentation, NSBundle.mainBundle.privateFrameworksPath.fileSystemRepresentation, map.fileSystemRepresentation, log, fullStartup);
@@ -536,11 +657,13 @@ static NSString *AppDisplayName(void) { return ProfileString(@"name")?:@"importe
     }
 #if TOLKARA_INTEGRATED_AUTH
     if([arguments containsObject:@"--local-game-startup"]) { [self launchLocalGame];return; }
-    if(arguments.count==1 && [NSFileManager.defaultManager fileExistsAtPath:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"Guest/libraries.json"]]) {
-        self.status.text=[AppDisplayName() stringByAppendingString:@"\nReady for local launch."];
-        self.playButton.hidden=NO;return;
-    }
 #endif
+    self.launchReady=YES;
+    [self refreshLaunchControl];
+    if(arguments.count==1 && StartupExecutable(NULL)) {
+        self.status.text=[AppDisplayName() stringByAppendingString:@"\nReady to start."];
+        return;
+    }
     if ([arguments containsObject:@"--native-initializer"] || [arguments containsObject:@"--native-startup"]) {
         [self runNativeGame:[arguments containsObject:@"--native-startup"]];return;
     }
