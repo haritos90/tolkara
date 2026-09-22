@@ -71,7 +71,7 @@ void hd_collect(HostDiagnostics *report, bool probe_execution, FILE *log) {
     if (!sysctlbyname("hw.memsize", &memory, &size, NULL, 0)) report->physical_memory = memory;
     report->footprint = footprint();
     report->page_size = (size_t)getpagesize();
-    report->arena_limit = NC_MAX_ARENA;
+    report->arena_limit = nc_arena_limit();
     report->available_memory = -1;
 #if TARGET_OS_IPHONE
     report->available_memory = (int64_t)os_proc_available_memory();

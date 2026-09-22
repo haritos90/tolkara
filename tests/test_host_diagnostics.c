@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <unistd.h>
 
 int main(void) {
     HostDiagnostics report;
@@ -12,7 +13,9 @@ int main(void) {
     hd_collect(&report, false, NULL);
     assert(!report.execution_probed);
     assert(report.page_size == (size_t)getpagesize());
-    assert(report.arena_limit == NC_MAX_ARENA);
+    // What may be prepared follows the system, under the ceiling.
+    assert(report.arena_limit == nc_arena_limit() && report.arena_limit <= NC_MAX_ARENA);
+    assert(!(report.arena_limit % (size_t)getpagesize()));
     assert(report.physical_memory > 0);
     assert(report.footprint > 0);
 

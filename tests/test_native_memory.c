@@ -30,6 +30,10 @@ static bool reject_pages(void *address, size_t size, void *context) {
     (void)address; (void)size; (void)context;
     return false;
 }
+// The mapping is the point, not its contents.
+static NCPreparation accept_without_reading(void *address,size_t size,void *context) {
+    (void)address; (void)size; (void)context; return NC_PREPARED;
+}
 static NCPreparation uncertain_pages(void *address,size_t size,void *context) {
     assert(accept_zeroed_pages(address,size,context)); return NC_UNCERTAIN;
 }
@@ -87,5 +91,17 @@ int main(void) {
     assert(!nc_create_managed(&memory,page,uncertain_pages,&calls,&quarantine) && errno==EINVAL);
     assert(calls==old_calls); // No second helper attempt or allocation.
     // Quarantined mappings intentionally live until process exit.
-    puts("PASS: native alias coherence, bounds, rejection cleanup, uncertain quarantine, write/retry denial (no generated code executed)");
+
+    // What may be prepared follows the device, not a constant.
+    NativeCodeMemory large={0},spare={0};
+    size_t big=160u*1024u*1024u;
+    assert(nc_arena_limit()<=NC_MAX_ARENA && !(nc_arena_limit()%page));
+    if(big<=nc_arena_limit()) {
+        assert(nc_create_managed(&large,big,accept_without_reading,NULL,&spare));
+        assert(large.size==big && large.published);
+        nc_destroy(&large);
+    }
+    assert(!nc_create_managed(&large,(size_t)NC_MAX_ARENA+page,accept_without_reading,NULL,&spare) && errno==EINVAL);
+    assert(!large.executable && !large.writable);
+    puts("PASS: native alias coherence, bounds, device-sized limit, rejection cleanup, uncertain quarantine, write/retry denial (no generated code executed)");
 }

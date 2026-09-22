@@ -1,4 +1,5 @@
 #include "NativeCodeMemory.h"
+#include <TargetConditionals.h>
 #include <errno.h>
 #include <libkern/OSCacheControl.h>
 #include <mach/mach.h>
@@ -6,6 +7,24 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#if TARGET_OS_IPHONE
+#include <os/proc.h>
+#endif
+
+size_t nc_available_memory(void) {
+#if TARGET_OS_IPHONE
+    return (size_t)os_proc_available_memory();
+#else
+    return 0;
+#endif
+}
+size_t nc_arena_limit(void) {
+    size_t limit = NC_MAX_ARENA, available = nc_available_memory();
+    // Twice for the alias, and the application allocates beside it.
+    if (available && available / 4 < limit) limit = available / 4;
+    size_t page = (size_t)getpagesize();
+    return limit - limit % page;
+}
 
 void nc_destroy(NativeCodeMemory *memory) {
     if (memory->quarantined) return;
@@ -19,7 +38,7 @@ bool nc_create_managed(NativeCodeMemory *memory, size_t size, NCPrepare prepare,
     if (!memory || !quarantine || memory == quarantine ||
         memory->size || memory->executable || memory->writable ||
         quarantine->size || quarantine->executable || quarantine->writable || !size ||
-        size % page || size > NC_MAX_ARENA || !prepare) {
+        size % page || size > nc_arena_limit() || !prepare) {
         errno = EINVAL; return false;
     }
     NativeCodeMemory staged = {.size = size};
@@ -51,7 +70,7 @@ bool nc_create_managed(NativeCodeMemory *memory, size_t size, NCPrepare prepare,
 bool nc_adopt(NativeCodeMemory *memory, void *executable, size_t size) {
     size_t page = (size_t)getpagesize();
     if (!memory || memory->size || memory->executable || memory->writable || !executable ||
-        !size || size % page || size > NC_MAX_ARENA || (uintptr_t)executable % page) {
+        !size || size % page || size > nc_arena_limit() || (uintptr_t)executable % page) {
         errno = EINVAL; return false;
     }
     vm_address_t alias = 0;

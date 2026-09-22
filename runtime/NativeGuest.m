@@ -413,10 +413,13 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         offset[i]=total;
         total+=(size_t)((library_end-library->header_address+GM_PAGE_SIZE-1)&~(uint64_t)(GM_PAGE_SIZE-1));
     }
-    LOG("[native] guest image span %zu bytes, %zu with carried libraries; the arena holds at most %u\n",
-        span,total,(unsigned)NC_MAX_ARENA);
-    if (total>NC_MAX_ARENA) {
-        LOG("[native] this image needs more executable memory than an arena may hold\n"); goto done;
+    size_t limit=nc_arena_limit();
+    LOG("[native] guest image span %zu bytes, %zu with carried libraries; this process may prepare %zu of the %zu it has left\n",
+        span,total,limit,nc_available_memory());
+    if (total>limit) {
+        LOG("[native] this image needs %zu bytes of executable memory and only %zu may be prepared here;"
+            " an arena is counted twice while its writable view exists\n",total,limit);
+        goto done;
     }
     bool arena_ready;
     bool local=false;
