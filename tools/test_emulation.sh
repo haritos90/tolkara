@@ -273,7 +273,10 @@ xcrun clang -fobjc-arc -Wall -Wextra -Werror \
 build/emulation/test_guest_stubs
 python3 tests/test_publish.py
 python3 tests/test_arena_publish.py
-python3 tests/test_nib.py
+xcrun clang -fobjc-arc -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined \
+    -Itranslation/AppKit -framework Foundation translation/AppKit/NibArchive.m tests/test_nib_archive.m \
+    -o build/emulation/test_nib_archive
+python3 tests/test_nib.py build/emulation/test_nib_archive
 python3 tests/test_metallib.py
 python3 - <<'PYFIXTURE'
 import sys
