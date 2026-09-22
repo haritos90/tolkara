@@ -170,6 +170,63 @@ xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
 build/emulation/guest_probe_sanitized build/emulation/Ambiguous.app/Contents/MacOS/Ambiguous \
     --carried-libraries --validate-fixups > build/emulation/ambiguous-imports.txt
 grep -q "_carried_shared <- @rpath/libsecond.dylib" build/emulation/ambiguous-imports.txt
+# A library that re-exports another answers for its names.
+rm -rf build/emulation/Reexport.app
+mkdir -p build/emulation/Reexport.app/Contents/MacOS build/emulation/Reexport.app/Contents/Frameworks
+cat > build/emulation/defines.c <<'C'
+int real_name(void) { return 3; }
+int other_name(void) { return 4; }
+C
+cat > build/emulation/subset.c <<'C'
+int subset_only(void) { return 1; }
+C
+cat > build/emulation/facade.c <<'C'
+int facade_only(void) { return 1; }
+C
+cat > build/emulation/shadow.c <<'C'
+int shadow_only(void) { return 1; }
+C
+cat > build/emulation/shadow_shared.c <<'C'
+int shadow_only(void) { return 1; }
+int real_name(void) { return 9; }
+int other_name(void) { return 9; }
+C
+cat > build/emulation/reexport.c <<'C'
+int shadow_only(void); int real_name(void); int other_name(void);
+int main(void) { return shadow_only() + real_name() + other_name(); }
+C
+printf '_real_name\n' > build/emulation/reexported-symbols.txt
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libdefines.dylib build/emulation/defines.c \
+    -o build/emulation/Reexport.app/Contents/Frameworks/libdefines.dylib
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libsubset.dylib build/emulation/subset.c \
+    build/emulation/Reexport.app/Contents/Frameworks/libdefines.dylib \
+    -Wl,-reexported_symbols_list,build/emulation/reexported-symbols.txt \
+    -Wl,-rpath,@loader_path/../Frameworks \
+    -o build/emulation/Reexport.app/Contents/Frameworks/libsubset.dylib
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libfacade.dylib build/emulation/facade.c \
+    -Wl,-reexport_library,build/emulation/Reexport.app/Contents/Frameworks/libdefines.dylib \
+    -Wl,-rpath,@loader_path/../Frameworks \
+    -o build/emulation/Reexport.app/Contents/Frameworks/libfacade.dylib
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libshadow.dylib build/emulation/shadow.c \
+    -o build/emulation/Reexport.app/Contents/Frameworks/libshadow.dylib
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 build/emulation/reexport.c \
+    build/emulation/Reexport.app/Contents/Frameworks/libshadow.dylib \
+    build/emulation/Reexport.app/Contents/Frameworks/libsubset.dylib \
+    build/emulation/Reexport.app/Contents/Frameworks/libfacade.dylib \
+    -Lbuild/emulation/Reexport.app/Contents/Frameworks -Wl,-rpath,@executable_path/../Frameworks \
+    -o build/emulation/Reexport.app/Contents/MacOS/Reexport
+# The shadowing library takes the names only after linking.
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libshadow.dylib build/emulation/shadow_shared.c \
+    -o build/emulation/Reexport.app/Contents/Frameworks/libshadow.dylib
+build/emulation/guest_probe_sanitized build/emulation/Reexport.app/Contents/MacOS/Reexport \
+    --carried-libraries --validate-fixups > build/emulation/reexport-imports.txt
+grep -q "_real_name <- @rpath/libdefines.dylib" build/emulation/reexport-imports.txt
+grep -q "_other_name <- @rpath/libdefines.dylib" build/emulation/reexport-imports.txt
 python3 tests/test_package.py
 python3 tests/test_profile.py
 xcrun clang -arch arm64 -x c -o build/emulation/module_fixture - <<'C'

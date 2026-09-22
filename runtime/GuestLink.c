@@ -128,29 +128,53 @@ bool gl_load(GuestLinkSet *set, const GuestImage *executable, const char *execut
     return true;
 }
 
-static bool exported_by(const GuestLibrary *library, const char *symbol, uint64_t *value) {
-    uint64_t address = 0;
-    bool absolute = false;
+// Which carried library an install name of `from` points at.
+static const GuestLibrary *carried_as(const GuestLinkSet *set, const GuestImage *from,
+                                      const char *from_path, const char *install_name) {
+    char path[PATH_MAX];
+    if (!install_name || !gl_resolve(set, from, from_path, install_name, path, sizeof path)) return NULL;
+    for (size_t i = 0; i < set->count; i++)
+        if (!strcmp(set->libraries[i].path, path)) return &set->libraries[i];
+    return NULL;
+}
+// What a library answers, following the re-exports it declares.
+_Static_assert(GL_MAX_LIBRARIES <= 64, "the visited set is a 64-bit mask");
+static const GuestLibrary *exported_by(const GuestLinkSet *set, const GuestLibrary *library,
+                                       const char *symbol, uint64_t *value, uint64_t *visited) {
+    uint64_t bit = 1ULL << (size_t)(library - set->libraries);
+    if (*visited & bit) return NULL;
+    *visited |= bit;
+    GIExport found;
     char ignored[256];
-    if (gi_export(&library->image, symbol, &address, &absolute, ignored, sizeof ignored) != GI_EXPORT_FOUND)
-        return false;
-    *value = absolute ? address : address + library->slide;
-    return true;
+    GIExportResult result = gi_export(&library->image, symbol, &found, ignored, sizeof ignored);
+    if (result == GI_EXPORT_FOUND) {
+        *value = found.absolute ? found.address : found.address + library->slide;
+        return library;
+    }
+    if (result == GI_EXPORT_REEXPORT) {
+        const GuestLibrary *defines = carried_as(set, &library->image, library->path,
+                                                 library->image.dylibs[found.ordinal - 1]);
+        return defines ? exported_by(set, defines, found.name ? found.name : symbol, value, visited) : NULL;
+    }
+    for (size_t i = 0; i < library->image.dylib_count; i++) {
+        if (!library->image.dylib_reexports[i]) continue;
+        const GuestLibrary *through = carried_as(set, &library->image, library->path, library->image.dylibs[i]);
+        const GuestLibrary *answer = through ? exported_by(set, through, symbol, value, visited) : NULL;
+        if (answer) return answer;
+    }
+    return NULL;
 }
 
 const GuestLibrary *gl_lookup(const GuestLinkSet *set, const GuestImage *from, const char *from_path,
                               const char *install_name, const char *symbol, uint64_t *value) {
     if (!set || !symbol || !value) return NULL;
     // The library the bind was linked against answers first.
-    char path[PATH_MAX];
-    if (install_name && gl_resolve(set, from, from_path, install_name, path, sizeof path))
-        for (size_t i = 0; i < set->count; i++)
-            if (!strcmp(set->libraries[i].path, path)) {
-                if (exported_by(&set->libraries[i], symbol, value)) return &set->libraries[i];
-                break;
-            }
+    uint64_t visited = 0;
+    const GuestLibrary *named = carried_as(set, from, from_path, install_name), *answer;
+    if (named && (answer = exported_by(set, named, symbol, value, &visited))) return answer;
+    // One already searched does not have the name either.
     for (size_t i = 0; i < set->count; i++)
-        if (exported_by(&set->libraries[i], symbol, value)) return &set->libraries[i];
+        if ((answer = exported_by(set, &set->libraries[i], symbol, value, &visited))) return answer;
     return NULL;
 }
 

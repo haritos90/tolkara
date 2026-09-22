@@ -131,6 +131,7 @@ static bool load(FILE *f, GuestImage *image, uint32_t file_type, char *error, si
             size_t length = lc.cmdsize - d.dylib.name.offset;
             char *name = malloc(length);
             if (!name) BAD("cannot allocate dylib name");
+            image->dylib_reexports[image->dylib_count] = lc.cmd == LC_REEXPORT_DYLIB;
             image->dylibs[image->dylib_count++] = name;
             if (!read_at(f, slice + cursor + d.dylib.name.offset, name, length) ||
                 !memchr(name, 0, length)) BAD("unterminated dylib name");
@@ -267,11 +268,12 @@ static bool export_uleb(const unsigned char **cursor, const unsigned char *end, 
     }
     return false;
 }
-GIExportResult gi_export(const GuestImage *image, const char *symbol,
-                         uint64_t *address, bool *absolute, char *error, size_t error_size) {
+GIExportResult gi_export(const GuestImage *image, const char *symbol, GIExport *out,
+                         char *error, size_t error_size) {
 #define INVALID(...) do { fail(error, error_size, __VA_ARGS__); return GI_EXPORT_INVALID; } while (0)
     if (error_size) error[0] = 0;
-    if (!symbol || !address || !absolute) INVALID("invalid export query");
+    if (!symbol || !out) INVALID("invalid export query");
+    *out = (GIExport){0};
     size_t remaining = strnlen(symbol, 4097);
     if (!remaining || remaining > 4096) INVALID("invalid export symbol length");
     if (!image->export_size) return GI_EXPORT_MISSING;
@@ -290,9 +292,21 @@ GIExportResult gi_export(const GuestImage *image, const char *symbol,
             uint64_t flags, value;
             if (!export_uleb(&cursor, children, &flags)) INVALID("invalid export flags");
             unsigned kind = flags & EXPORT_SYMBOL_FLAGS_KIND_MASK;
-            if ((flags & ~(uint64_t)(EXPORT_SYMBOL_FLAGS_KIND_MASK | EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION)) ||
+            if ((flags & ~(uint64_t)(EXPORT_SYMBOL_FLAGS_KIND_MASK | EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION |
+                                     EXPORT_SYMBOL_FLAGS_REEXPORT)) ||
                 (kind != EXPORT_SYMBOL_FLAGS_KIND_REGULAR && kind != EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE))
                 INVALID("unsupported export kind/flags %#" PRIx64, flags);
+            // A re-export names a library and a name.
+            if (flags & EXPORT_SYMBOL_FLAGS_REEXPORT) {
+                uint64_t ordinal;
+                if (!export_uleb(&cursor, children, &ordinal) || !ordinal || ordinal > image->dylib_count)
+                    INVALID("re-export names library %" PRIu64 " of %zu", ordinal, image->dylib_count);
+                const char *imported = (const char *)cursor;
+                size_t length = (size_t)(children - cursor);
+                if (!length || memchr(imported, 0, length) != imported + length - 1) INVALID("invalid re-export name");
+                out->ordinal = (int)ordinal; out->name = *imported ? imported : NULL;
+                return GI_EXPORT_REEXPORT;
+            }
             if (!export_uleb(&cursor, children, &value) || cursor != children) INVALID("invalid export address");
             bool is_absolute = kind == EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE;
             if (!is_absolute) {
@@ -305,7 +319,7 @@ GIExportResult gi_export(const GuestImage *image, const char *symbol,
                 }
                 if (!mapped) INVALID("export outside mapped image");
             }
-            *address = value; *absolute = is_absolute;
+            out->address = value; out->absolute = is_absolute;
             return GI_EXPORT_FOUND;
         }
         if (children == end) INVALID("missing export child count");

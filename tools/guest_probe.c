@@ -31,13 +31,18 @@ int main(int argc, char **argv) {
     gi_report(&image, stdout);
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--export")) continue;
-        const char *symbol = argv[++i]; uint64_t address; bool absolute;
-        GIExportResult result = gi_export(&image, symbol, &address, &absolute, error, sizeof error);
+        const char *symbol = argv[++i]; GIExport found;
+        GIExportResult result = gi_export(&image, symbol, &found, error, sizeof error);
+        if (result == GI_EXPORT_REEXPORT) {
+            printf("[export] %s re-exported from %s as %s\n", symbol,
+                   image.dylibs[found.ordinal - 1], found.name ? found.name : symbol);
+            continue;
+        }
         if (result != GI_EXPORT_FOUND) {
             fprintf(stderr, "export %s: %s\n", symbol, result == GI_EXPORT_MISSING ? "not found" : error);
             gi_destroy(&image); return 1;
         }
-        printf("[export] %s=%#llx absolute=%d\n", symbol, (unsigned long long)address, absolute);
+        printf("[export] %s=%#llx absolute=%d\n", symbol, (unsigned long long)found.address, found.absolute);
     }
     GuestLinkSet set = {0};
     if (carried) {

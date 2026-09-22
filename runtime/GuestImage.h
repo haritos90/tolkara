@@ -23,6 +23,7 @@ typedef struct {
     uint64_t tls_address, tls_size, tls_descriptors, tls_descriptors_size, tls_initializer_count;
     size_t tls_alignment;
     char *dylibs[GI_MAX_DYLIBS];
+    bool dylib_reexports[GI_MAX_DYLIBS];   // LC_REEXPORT_DYLIB: this image answers for that one too
     size_t dylib_count;
     char *rpaths[GI_MAX_RPATHS];   // LC_RPATH, for expanding @rpath install names
     size_t rpath_count;
@@ -36,10 +37,13 @@ bool gi_load(const char *path, GuestImage *image, char *error, size_t error_size
 // Explicit library entry point: accepts MH_DYLIB only, including a zero preferred
 // base and no LC_MAIN. This is a data-only load, not native dlopen/execution.
 bool gi_load_library(const char *path, GuestImage *image, char *error, size_t error_size);
-typedef enum { GI_EXPORT_INVALID = -1, GI_EXPORT_MISSING = 0, GI_EXPORT_FOUND = 1 } GIExportResult;
+typedef enum { GI_EXPORT_INVALID = -1, GI_EXPORT_MISSING = 0, GI_EXPORT_FOUND = 1,
+               GI_EXPORT_REEXPORT = 2 } GIExportResult;
+// What an export trie answers: an address, or another library.
+typedef struct { uint64_t address; bool absolute; int ordinal; const char *name; } GIExport;
 // Resolve an ordinary/absolute export at its preferred address. Apply the runtime
 // slide only to non-absolute results. Unsupported export kinds fail explicitly.
-GIExportResult gi_export(const GuestImage *image, const char *symbol,
-                         uint64_t *address, bool *absolute, char *error, size_t error_size);
+GIExportResult gi_export(const GuestImage *image, const char *symbol, GIExport *out,
+                         char *error, size_t error_size);
 void gi_destroy(GuestImage *image);
 void gi_report(const GuestImage *image, FILE *out);
