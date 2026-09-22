@@ -115,6 +115,14 @@ static NSString *AppDisplayName(void) {
     return bundle?bundle.lastPathComponent.stringByDeletingPathExtension:@"imported app";
 }
 
+// Which case this process is in, and what to do.
+static NSString *ExecutableMemoryState(void) {
+    if(ng_arena_reserved()) return @"Executable memory is ready.";
+    if(!hd_may_run_unsigned_code())
+        return @"No executable memory: enable JIT for this app in the tool you sideloaded it with, then reopen it.";
+    return @"JIT is enabled. Memory is mapped at launch; an iPad that enforces it needs an enabler that stays attached.";
+}
+
 @implementation AKHostSceneDelegate
 - (UISceneWindowingControlStyle *)preferredWindowingControlStyleForScene:(UIWindowScene *)scene API_AVAILABLE(ios(26.0)) {
     (void)scene;
@@ -255,7 +263,8 @@ static NSString *AppDisplayName(void) {
         [report writeToFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/local-game-setup.txt"]
             atomically:YES encoding:NSUTF8StringEncoding error:NULL];
         if(!self.localAuthorization.localSessionReady || !ng_use_local_authorization()) {
-            self.status.text=[@"Local launch could not prepare. Close and reopen the app to retry.\n" stringByAppendingString:report];
+            self.status.text=[NSString stringWithFormat:@"%@\nLocal launch could not prepare either. Close and reopen the app to retry.\n%@",
+                ExecutableMemoryState(),report];
             UIApplication.sharedApplication.idleTimerDisabled=NO;return;
         }
         self.status.text=[NSString stringWithFormat:@"Starting %@…\nKeep the app open. Startup currently takes a few minutes.",AppDisplayName()];
@@ -386,7 +395,9 @@ static NSString *AppDisplayName(void) {
         return;
     }
     BOOL ok = ng_initialize(path.fileSystemRepresentation, NSBundle.mainBundle.privateFrameworksPath.fileSystemRepresentation, map.fileSystemRepresentation, log, fullStartup);
-    self.status.text = ok ? (fullStartup ? @"App closed." : @"Original client first initializer returned.") : @"Native startup stopped. See runtime log.";
+    NSString *stopped = ng_arena_reserved() ? @"Native startup stopped. See runtime log." :
+        [@"Native startup stopped. See runtime log.\n" stringByAppendingString:ExecutableMemoryState()];
+    self.status.text = ok ? (fullStartup ? @"App closed." : @"Original client first initializer returned.") : stopped;
     UIApplication.sharedApplication.idleTimerDisabled = NO;
     // Runtime callbacks retain this log for the life of the guest.
     [self refreshDebugPanel];
@@ -676,7 +687,7 @@ static NSString *AppDisplayName(void) {
     [self reserveExecutableMemory];
     [self refreshLaunchControl];
     if(arguments.count==1 && StartupExecutable(NULL)) {
-        self.status.text=[AppDisplayName() stringByAppendingString:@"\nReady to start."];
+        self.status.text=[NSString stringWithFormat:@"%@\nReady to start.\n%@",AppDisplayName(),ExecutableMemoryState()];
         return;
     }
     if ([arguments containsObject:@"--native-initializer"] || [arguments containsObject:@"--native-startup"]) {
