@@ -227,6 +227,35 @@ build/emulation/guest_probe_sanitized build/emulation/Reexport.app/Contents/MacO
     --carried-libraries --validate-fixups > build/emulation/reexport-imports.txt
 grep -q "_real_name <- @rpath/libdefines.dylib" build/emulation/reexport-imports.txt
 grep -q "_other_name <- @rpath/libdefines.dylib" build/emulation/reexport-imports.txt
+# A carried library with no rpath of its own.
+rm -rf build/emulation/Chain.app
+mkdir -p build/emulation/Chain.app/Contents/MacOS build/emulation/Chain.app/Contents/Frameworks
+cat > build/emulation/inner.c <<'C'
+int inner_value(void) { return 5; }
+C
+cat > build/emulation/outer.c <<'C'
+int inner_value(void);
+int outer_value(void) { return inner_value(); }
+C
+cat > build/emulation/chain.c <<'C'
+int outer_value(void);
+int main(void) { return outer_value(); }
+C
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libinner.dylib build/emulation/inner.c \
+    -o build/emulation/Chain.app/Contents/Frameworks/libinner.dylib
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libouter.dylib build/emulation/outer.c \
+    build/emulation/Chain.app/Contents/Frameworks/libinner.dylib \
+    -o build/emulation/Chain.app/Contents/Frameworks/libouter.dylib
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 build/emulation/chain.c \
+    build/emulation/Chain.app/Contents/Frameworks/libouter.dylib \
+    -Lbuild/emulation/Chain.app/Contents/Frameworks -Wl,-rpath,@executable_path/../Frameworks \
+    -o build/emulation/Chain.app/Contents/MacOS/Chain
+build/emulation/guest_probe_sanitized build/emulation/Chain.app/Contents/MacOS/Chain \
+    --carried-libraries --validate-fixups > build/emulation/chain-imports.txt
+grep -q "carries 2 libraries of its own, 0 refused" build/emulation/chain-imports.txt
+grep -q "_inner_value <- @rpath/libinner.dylib" build/emulation/chain-imports.txt
 python3 tests/test_package.py
 python3 tests/test_profile.py
 xcrun clang -arch arm64 -x c -o build/emulation/module_fixture - <<'C'

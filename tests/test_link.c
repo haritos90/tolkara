@@ -62,9 +62,36 @@ int main(void) {
     assert(!gl_resolve(&set, &bare, executable, "@rpath/libcarried.dylib", out, sizeof out));
     // An unknown prefix is not guessed at.
     assert(!gl_resolve(&set, &from, executable, "@unknown_path/libcarried.dylib", out, sizeof out));
+    // An rpath is often the prefix on its own.
+    char loader[] = "@loader_path", own[] = "@executable_path";
+    GuestImage prefix = {0};
+    prefix.rpath_count = 1;
+    prefix.rpaths[0] = loader;
+    assert(gl_resolve(&set, &prefix, carried, "@rpath/libcarried.dylib", out, sizeof out));
+    assert(!strcmp(out, resolved_carried));
+    prefix.rpaths[0] = own;
+    assert(gl_resolve(&set, &prefix, carried, "@rpath/App", out, sizeof out));
+    assert(!strcmp(out, resolved_executable));
+
+    // No rpath of its own: resolved through its loader's.
+    GuestImage main_image = {0};
+    main_image.rpath_count = 1;
+    main_image.rpaths[0] = rpath;
+    set.executable_image = &main_image;
+    set.count = 1;
+    set.libraries[0].path = strdup(resolved_carried);
+    set.libraries[0].install_name = strdup("@rpath/libcarried.dylib");
+    set.libraries[0].loader = GL_MAX_LIBRARIES;
+    assert(set.libraries[0].path && set.libraries[0].install_name);
+    assert(gl_resolve(&set, &set.libraries[0].image, set.libraries[0].path,
+                      "@rpath/libcarried.dylib", out, sizeof out));
+    assert(!strcmp(out, resolved_carried));
+    // The chain ends at the executable and reaches nothing outside.
+    assert(!gl_resolve(&set, &set.libraries[0].image, set.libraries[0].path,
+                       "@rpath/elsewhere.dylib", out, sizeof out));
 
     gl_destroy(&set);
-    assert(!set.root && !set.executable && !set.count);
+    assert(!set.root && !set.executable && !set.count && !set.executable_image);
     unlink(executable); unlink(carried); unlink(outside);
     rmdir(macos); rmdir(frameworks); rmdir(contents); rmdir(bundle); rmdir(root);
     puts("PASS: carried library paths resolve inside the application only (@rpath, @loader_path, @executable_path)");

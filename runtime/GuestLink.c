@@ -41,13 +41,14 @@ static bool inside(const char *root, const char *path) {
 static bool expand(const GuestLinkSet *set, const char *from_path, const char *name,
                    char *out, size_t size) {
     char directory[PATH_MAX];
-    if (!strncmp(name, "@executable_path/", 17)) {
+    // An rpath is often the prefix on its own.
+    if (!strncmp(name, "@executable_path", 16) && (!name[16] || name[16] == '/')) {
         directory_of(set->executable, directory, sizeof directory);
-        return snprintf(out, size, "%s/%s", directory, name + 17) < (int)size;
+        return snprintf(out, size, "%s%s", directory, name + 16) < (int)size;
     }
-    if (!strncmp(name, "@loader_path/", 13)) {
+    if (!strncmp(name, "@loader_path", 12) && (!name[12] || name[12] == '/')) {
         directory_of(from_path ? from_path : set->executable, directory, sizeof directory);
-        return snprintf(out, size, "%s/%s", directory, name + 13) < (int)size;
+        return snprintf(out, size, "%s%s", directory, name + 12) < (int)size;
     }
     if (name[0] == '@') return false;
     return snprintf(out, size, "%s", name) < (int)size;
@@ -62,16 +63,36 @@ static bool accept(const GuestLinkSet *set, const char *candidate, char *out, si
     return snprintf(out, size, "%s", resolved) < (int)size;
 }
 
+// Which carried library an image is; the set owns them.
+static const GuestLibrary *library_of(const GuestLinkSet *set, const GuestImage *image) {
+    for (size_t i = 0; i < set->count; i++)
+        if (&set->libraries[i].image == image) return &set->libraries[i];
+    return NULL;
+}
+
 bool gl_resolve(const GuestLinkSet *set, const GuestImage *from, const char *from_path,
                 const char *name, char *out, size_t size) {
     if (!set || !set->root || !set->executable || !name || !out || !size) return false;
     char candidate[PATH_MAX];
     if (!strncmp(name, "@rpath/", 7)) {
-        for (size_t i = 0; from && i < from->rpath_count; i++) {
-            char expanded[PATH_MAX];
-            if (!expand(set, from_path, from->rpaths[i], expanded, sizeof expanded)) continue;
-            if (snprintf(candidate, sizeof candidate, "%s/%s", expanded, name + 7) >= (int)sizeof candidate) continue;
-            if (accept(set, candidate, out, size)) return true;
+        // The naming image's rpaths, then its loaders'.
+        const GuestImage *image = from;
+        const char *path = from_path;
+        for (size_t step = 0; step <= set->count; step++) {
+            for (size_t i = 0; image && i < image->rpath_count; i++) {
+                char expanded[PATH_MAX];
+                if (!expand(set, path, image->rpaths[i], expanded, sizeof expanded)) continue;
+                if (snprintf(candidate, sizeof candidate, "%s/%s", expanded, name + 7) >= (int)sizeof candidate) continue;
+                if (accept(set, candidate, out, size)) return true;
+            }
+            const GuestLibrary *library = library_of(set, image);
+            if (!library) break;
+            if (library->loader < set->count) {
+                image = &set->libraries[library->loader].image;
+                path = set->libraries[library->loader].path;
+            } else {
+                image = set->executable_image; path = set->executable;
+            }
         }
         return false;
     }
@@ -81,6 +102,8 @@ bool gl_resolve(const GuestLinkSet *set, const GuestImage *from, const char *fro
 
 static bool carried_by(GuestLinkSet *set, const GuestImage *from, const char *from_path,
                        char *error, size_t error_size) {
+    const GuestLibrary *loader = library_of(set, from);
+    size_t loader_index = loader ? (size_t)(loader - set->libraries) : GL_MAX_LIBRARIES;
     for (size_t i = 0; i < from->dylib_count; i++) {
         char path[PATH_MAX];
         if (!gl_resolve(set, from, from_path, from->dylibs[i], path, sizeof path)) continue;
@@ -96,6 +119,7 @@ static bool carried_by(GuestLinkSet *set, const GuestImage *from, const char *fr
         }
         library->path = strdup(path);
         library->install_name = strdup(from->dylibs[i]);
+        library->loader = loader_index;
         if (!library->path || !library->install_name) {
             gi_destroy(&library->image);
             free(library->path); free(library->install_name);
@@ -118,6 +142,7 @@ bool gl_load(GuestLinkSet *set, const GuestImage *executable, const char *execut
     set->executable = strdup(resolved);
     if (!realpath(folder, resolved)) { gl_destroy(set); return fail(error, error_size, "cannot resolve the application folder"); }
     set->root = strdup(resolved);
+    set->executable_image = executable;
     if (!set->executable || !set->root) { gl_destroy(set); return fail(error, error_size, "cannot hold the link set"); }
     // The executable's list first, then each library's, as loaded.
     if (!carried_by(set, executable, set->executable, error, error_size)) { gl_destroy(set); return false; }
