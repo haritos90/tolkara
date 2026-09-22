@@ -120,6 +120,23 @@ static int guest_sigaction(int number,const struct sigaction *action,struct siga
 // Carried libraries, for the life of the guest.
 static GuestLinkSet carried;
 static NativeCodeMemory external_quarantine;
+// Prepared before the launch, while a debugger was there.
+static NativeCodeMemory reserved_arena;
+bool ng_arena_reserved(void) { return reserved_arena.published; }
+bool ng_reserve_arena(FILE *log) {
+    if (reserved_arena.published) return true;
+    if (atomic_load(&initialization_attempted) || !da_debugger_present()) return false;
+    // A script may refuse the largest; take what it gives.
+    for (size_t size=nc_arena_limit(); size>=64u*1024u*1024u; size/=2)
+        if (da_request_arena(&reserved_arena,size,log)) break;
+    if (!reserved_arena.published) return false;
+    (void)da_release_debugger(&reserved_arena,log);
+    if (hd_is_executable(reserved_arena.executable)) return true;
+    // Useless now, and there is no second chance to ask.
+    if (log) fprintf(log,"[native] the reserved arena did not survive the detach\n");
+    nc_destroy(&reserved_arena);
+    return false;
+}
 // Nothing to publish: an enabler outside the app prepared this.
 static NCPreparation prepare_externally(void *address, size_t size, void *context) {
     (void)context;
@@ -434,7 +451,11 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         LOG("[native] this process may already run unsigned code; its arena comes from whatever prepared it\n");
         external=true;
     }
-    if(external) {
+    if(reserved_arena.published && total<=reserved_arena.size) {
+        guest.arena=reserved_arena; arena_ready=true;
+        LOG("[native] using the arena reserved earlier: %zu bytes\n",guest.arena.size);
+    }
+    else if(external) {
         // Ask an attached debugger first, then have it detach.
         arena_ready=da_request_arena(&guest.arena,total,guest.log);
         if(arena_ready) (void)da_release_debugger(&guest.arena,guest.log);

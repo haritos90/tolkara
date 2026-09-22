@@ -8,3 +8,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
 bool ng_use_local_authorization(void);
 // Prepared outside the app; accepted only if really executable.
 bool ng_use_external_authorization(void);
+// Ask an attached debugger for the arena now.
+bool ng_reserve_arena(FILE *log);
+// Whether an arena is already prepared for the launch.
+bool ng_arena_reserved(void);

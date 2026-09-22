@@ -212,6 +212,14 @@ static NSString *AppDisplayName(void) {
     // main-queue block that never returns would wedge the main dispatch queue.
     [self performSelector:@selector(startGuest) withObject:nil afterDelay:0];
 }
+// An enabler is attached only briefly; take it now.
+- (void)reserveExecutableMemory {
+    if(ng_arena_reserved() || !hd_debugger_attached()) return;
+    if(ng_reserve_arena(NULL)) [self refreshLaunchControl];
+}
+- (void)sceneDidBecomeActive:(UIScene *)scene {
+    (void)scene; [self reserveExecutableMemory];
+}
 - (void)launchApplication {
 #if TOLKARA_INTEGRATED_AUTH
     [self launchLocalGame];
@@ -665,6 +673,7 @@ static NSString *AppDisplayName(void) {
     if([arguments containsObject:@"--local-game-startup"]) { [self launchLocalGame];return; }
 #endif
     self.launchReady=YES;
+    [self reserveExecutableMemory];
     [self refreshLaunchControl];
     if(arguments.count==1 && StartupExecutable(NULL)) {
         self.status.text=[AppDisplayName() stringByAppendingString:@"\nReady to start."];
