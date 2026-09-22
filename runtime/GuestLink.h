@@ -28,8 +28,16 @@ bool gl_load(GuestLinkSet *set, const GuestImage *executable, const char *execut
 // all. `from` is the image that asked and `from_path` the file it came from.
 bool gl_resolve(const GuestLinkSet *set, const GuestImage *from, const char *from_path,
                 const char *name, char *out, size_t size);
-// An export of any loaded library, with that library's slide applied.
-bool gl_export(const GuestLinkSet *set, const char *symbol, uint64_t *value);
+// The carried library that answers a symbol, with that library's slide already
+// applied to the value, or NULL when none of them has it. A bind carries the
+// ordinal of the library it was linked against; `install_name` is the name that
+// ordinal stands for, and the library it points at answers before any other,
+// because that is what a two-level namespace means. An ordinal that means self,
+// the main executable or a flat lookup names no library: pass NULL, and every
+// carried library is searched in load order. `from` and `from_path` are the
+// image that asked, which is what an install name is relative to.
+const GuestLibrary *gl_lookup(const GuestLinkSet *set, const GuestImage *from, const char *from_path,
+                              const char *install_name, const char *symbol, uint64_t *value);
 // Memory all the libraries need together, page aligned.
 uint64_t gl_span(const GuestLinkSet *set);
 void gl_destroy(GuestLinkSet *set);

@@ -1,16 +1,20 @@
 #include "GuestImage.h"
 #include "GuestFixups.h"
 #include "GuestLink.h"
+#include <stdio.h>
 #include <string.h>
 // Only the application's own libraries answer; the rest is zero.
 static struct { size_t answered, missing; } imports;
+// The image whose fixups are walked; ordinals index its list.
+typedef struct { GuestLinkSet *set; const GuestImage *image; const char *path; } Binder;
 static bool inspect_import(const char *s, int o, bool w, uint64_t *v, void *c) {
-    (void)o; (void)w;
-    GuestLinkSet *set = c;
-    if (set && gl_export(set, s, v)) { imports.answered++; return true; }
+    (void)w;
+    Binder *binder = c;
+    const char *needed = o > 0 && (size_t)o <= binder->image->dylib_count ? binder->image->dylibs[o - 1] : NULL;
+    const GuestLibrary *answer = gl_lookup(binder->set, binder->image, binder->path, needed, s, v);
+    if (answer) { imports.answered++; printf("[import] %s <- %s\n", s, answer->install_name); return true; }
     imports.missing++; *v=0; return true;
 }
-#include <stdio.h>
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: guest_probe <original Mach-O> [--library] [--carried-libraries] [--validate-fixups] [--export symbol ...]\n"); return 2; }
     bool library = false, fixups = false, carried = false;
@@ -46,13 +50,15 @@ int main(int argc, char **argv) {
         GFStats stats;
         // Carried libraries bind first: a miss here is real.
         for (size_t i = 0; i < set.count; i++) {
-            if (!gf_apply(&set.libraries[i].image, 0x200000, inspect_import, &set, &stats, error, sizeof error)) {
+            Binder binder = {&set, &set.libraries[i].image, set.libraries[i].path};
+            if (!gf_apply(&set.libraries[i].image, 0x200000, inspect_import, &binder, &stats, error, sizeof error)) {
                 fprintf(stderr, "%s: %s\n", set.libraries[i].install_name, error);
                 gl_destroy(&set); gi_destroy(&image); return 1;
             }
             printf("[fixups] %s rebases=%zu binds=%zu\n", set.libraries[i].install_name, stats.rebases, stats.binds);
         }
-        if (!gf_apply(&image, 0x200000, inspect_import, &set, &stats, error, sizeof error)) {
+        Binder binder = {&set, &image, argv[1]};
+        if (!gf_apply(&image, 0x200000, inspect_import, &binder, &stats, error, sizeof error)) {
             fprintf(stderr, "%s\n", error); gl_destroy(&set); gi_destroy(&image); return 1;
         }
         printf("[fixups] validated rebases=%zu binds=%zu (diagnostic addresses only; no execution)\n", stats.rebases, stats.binds);

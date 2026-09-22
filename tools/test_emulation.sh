@@ -135,6 +135,41 @@ xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 build/emulation/c
     -o build/emulation/Fixture.app/Contents/MacOS/Fixture
 build/emulation/guest_probe_sanitized build/emulation/Fixture.app/Contents/MacOS/Fixture \
     --carried-libraries --validate-fixups | grep -q "imports from carried libraries=1 elsewhere=0"
+# Two carried libraries exporting one name; the ordinal decides.
+rm -rf build/emulation/Ambiguous.app
+mkdir -p build/emulation/Ambiguous.app/Contents/MacOS build/emulation/Ambiguous.app/Contents/Frameworks
+cat > build/emulation/first.c <<'C'
+int first_only(void) { return 1; }
+C
+cat > build/emulation/second.c <<'C'
+int carried_shared(void) { return 2; }
+C
+cat > build/emulation/first_shared.c <<'C'
+int first_only(void) { return 1; }
+int carried_shared(void) { return 1; }
+C
+cat > build/emulation/ambiguous.c <<'C'
+int first_only(void);
+int carried_shared(void);
+int main(void) { return first_only() + carried_shared(); }
+C
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libfirst.dylib build/emulation/first.c \
+    -o build/emulation/Ambiguous.app/Contents/Frameworks/libfirst.dylib
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libsecond.dylib build/emulation/second.c \
+    -o build/emulation/Ambiguous.app/Contents/Frameworks/libsecond.dylib
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 build/emulation/ambiguous.c \
+    build/emulation/Ambiguous.app/Contents/Frameworks/libfirst.dylib \
+    build/emulation/Ambiguous.app/Contents/Frameworks/libsecond.dylib \
+    -Wl,-rpath,@executable_path/../Frameworks -o build/emulation/Ambiguous.app/Contents/MacOS/Ambiguous
+# The first library takes the shared name only after linking.
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libfirst.dylib build/emulation/first_shared.c \
+    -o build/emulation/Ambiguous.app/Contents/Frameworks/libfirst.dylib
+build/emulation/guest_probe_sanitized build/emulation/Ambiguous.app/Contents/MacOS/Ambiguous \
+    --carried-libraries --validate-fixups > build/emulation/ambiguous-imports.txt
+grep -q "_carried_shared <- @rpath/libsecond.dylib" build/emulation/ambiguous-imports.txt
 python3 tests/test_package.py
 python3 tests/test_profile.py
 xcrun clang -arch arm64 -x c -o build/emulation/module_fixture - <<'C'

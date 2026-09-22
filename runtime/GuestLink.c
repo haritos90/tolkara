@@ -128,18 +128,30 @@ bool gl_load(GuestLinkSet *set, const GuestImage *executable, const char *execut
     return true;
 }
 
-bool gl_export(const GuestLinkSet *set, const char *symbol, uint64_t *value) {
-    if (!set || !symbol || !value) return false;
-    for (size_t i = 0; i < set->count; i++) {
-        uint64_t address = 0;
-        bool absolute = false;
-        char ignored[256];
-        if (gi_export(&set->libraries[i].image, symbol, &address, &absolute, ignored, sizeof ignored) != GI_EXPORT_FOUND)
-            continue;
-        *value = absolute ? address : address + set->libraries[i].slide;
-        return true;
-    }
-    return false;
+static bool exported_by(const GuestLibrary *library, const char *symbol, uint64_t *value) {
+    uint64_t address = 0;
+    bool absolute = false;
+    char ignored[256];
+    if (gi_export(&library->image, symbol, &address, &absolute, ignored, sizeof ignored) != GI_EXPORT_FOUND)
+        return false;
+    *value = absolute ? address : address + library->slide;
+    return true;
+}
+
+const GuestLibrary *gl_lookup(const GuestLinkSet *set, const GuestImage *from, const char *from_path,
+                              const char *install_name, const char *symbol, uint64_t *value) {
+    if (!set || !symbol || !value) return NULL;
+    // The library the bind was linked against answers first.
+    char path[PATH_MAX];
+    if (install_name && gl_resolve(set, from, from_path, install_name, path, sizeof path))
+        for (size_t i = 0; i < set->count; i++)
+            if (!strcmp(set->libraries[i].path, path)) {
+                if (exported_by(&set->libraries[i], symbol, value)) return &set->libraries[i];
+                break;
+            }
+    for (size_t i = 0; i < set->count; i++)
+        if (exported_by(&set->libraries[i], symbol, value)) return &set->libraries[i];
+    return NULL;
 }
 
 uint64_t gl_span(const GuestLinkSet *set) {

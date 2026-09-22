@@ -297,16 +297,21 @@ static NSString *library_path(NSString *install_name, const char *frameworks) {
     if ([leaf hasSuffix:@".dylib"]) return [@"/usr/lib" stringByAppendingPathComponent:leaf];
     return [NSString stringWithFormat:@"/System/Library/Frameworks/%@.framework/%@",leaf,leaf];
 }
+// The image being fixed up. Ordinals index its own list.
+typedef struct { const GuestImage *image; const char *path; void *const *host; } GuestBinder;
 static bool resolve(const char *symbol, int ordinal, bool weak, uint64_t *value, void *context) {
-    (void)context;
+    const GuestBinder *binder = context;
     const char *name = symbol[0]=='_' ? symbol+1 : symbol;
     void *pointer = hook(name);
-    // The application's own libraries answer before the system does: their code
-    // is the application's, and a name they export is theirs even where iPadOS
-    // happens to have one too.
+    // A positive ordinal names a library; the rest name nothing.
+    const char *needed = binder && ordinal>0 && (size_t)ordinal<=binder->image->dylib_count ?
+        binder->image->dylibs[ordinal-1] : NULL;
+    // The application's own libraries answer before the system does.
     uint64_t carried_value=0;
-    if (!pointer && gl_export(&carried,symbol,&carried_value)) { *value=carried_value; return true; }
-    if (!pointer && ordinal>0 && guest.libraries[ordinal-1]) pointer=dlsym(guest.libraries[ordinal-1],name);
+    if (!pointer && gl_lookup(&carried,binder?binder->image:NULL,binder?binder->path:NULL,needed,symbol,&carried_value)) {
+        *value=carried_value; return true;
+    }
+    if (!pointer && needed && binder->host && binder->host[ordinal-1]) pointer=dlsym(binder->host[ordinal-1],name);
     if (!pointer) pointer=dlsym(RTLD_DEFAULT,name);
     // Nothing provides it: a stub, or null when weak.
     if (!pointer && !weak) pointer=gs_bind(symbol,gs_kind(symbol));
@@ -444,12 +449,14 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     for (size_t i=0;i<carried.count;i++) {
         GuestLibrary *library=&carried.libraries[i];
         GFStats library_stats;
-        if (!gf_apply(&library->image,library->slide,resolve,NULL,&library_stats,error,sizeof error)) {
+        GuestBinder binder={.image=&library->image,.path=library->path};
+        if (!gf_apply(&library->image,library->slide,resolve,&binder,&library_stats,error,sizeof error)) {
             LOG("[native] %s fixups failed: %s\n",library->install_name,error); goto done;
         }
         LOG("[native] %s rebases=%zu binds=%zu\n",library->install_name,library_stats.rebases,library_stats.binds);
     }
-    if (!gf_apply(&guest.image,guest.slide,resolve,NULL,&stats,error,sizeof error)) { LOG("[native] fixups failed: %s\n",error); goto done; }
+    GuestBinder binder={.image=&guest.image,.path=guest.path,.host=guest.libraries};
+    if (!gf_apply(&guest.image,guest.slide,resolve,&binder,&stats,error,sizeof error)) { LOG("[native] fixups failed: %s\n",error); goto done; }
     LOG("[native] resolved rebases=%zu binds=%zu stubs=%u of %u\n",stats.rebases,stats.binds,gs_used(),gs_capacity());
     if (guest.image.has_tls) {
         if (guest.image.tls_initializer_count) { LOG("[native] TLS constructors unsupported\n"); goto done; }
