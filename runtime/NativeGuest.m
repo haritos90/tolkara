@@ -47,7 +47,6 @@ bool ng_use_external_authorization(void) {
 
 static struct {
     GuestImage image;
-    GuestTLS tls;
     NativeCodeMemory arena;
     void *libraries[GI_MAX_DYLIBS];
     uint64_t base, slide;
@@ -246,10 +245,32 @@ static void guest_unexpected_lazy_bind(void) {
 __attribute__((noinline,used,visibility("default")))
 void host_debugger_guest_complete(bool ok) { __asm__ volatile("" : : "r"(ok) : "memory"); }
 extern void *guest_tlv_bootstrap(const uint64_t descriptor[3]);
+// One template per image, found by its descriptor range.
+static GuestTLS guest_tls[1+GL_MAX_LIBRARIES];
+static size_t guest_tls_count;
 void *guest_tlv_address(const uint64_t descriptor[3]) {
-    void *value=gt_address(&guest.tls,descriptor);
-    if (!value) { LOG("[native] invalid TLS descriptor %p\n",descriptor); abort(); }
-    return value;
+    for (size_t i=0;i<guest_tls_count;i++) {
+        void *value=gt_address(&guest_tls[i],descriptor);
+        if (value) return value;
+    }
+    LOG("[native] invalid TLS descriptor %p\n",descriptor); abort();
+}
+// The image's initial thread-local bytes and its descriptors.
+static bool setup_tls(GuestImage *image, uint64_t slide, const char *name) {
+    if (!image->has_tls) return true;
+    if (image->tls_initializer_count) { LOG("[native] %s: TLS constructors unsupported\n",name); return false; }
+    if (guest_tls_count==sizeof guest_tls/sizeof *guest_tls) { LOG("[native] %s: too many images with TLS\n",name); return false; }
+    GuestTLS *tls=&guest_tls[guest_tls_count];
+    void *template=malloc((size_t)image->tls_size);
+    bool ready=template && gm_read(&image->memory,image->tls_address,template,(size_t)image->tls_size)==GM_OK &&
+        gt_create(tls,template,(size_t)image->tls_size,image->tls_alignment,
+            (uintptr_t)(image->tls_descriptors+slide),(size_t)image->tls_descriptors_size);
+    free(template);
+    if (!ready) { LOG("[native] %s: TLS template setup failed\n",name); return false; }
+    LOG("[native] %s: TLS template size=%zu alignment=%zu descriptors=%zu\n",
+        name,tls->size,tls->alignment,tls->descriptors_size/24);
+    guest_tls_count++;
+    return true;
 }
 static int guest_executable_path(char *buffer, uint32_t *size) {
     size_t required=strlen(guest.path)+1;
@@ -458,16 +479,10 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     GuestBinder binder={.image=&guest.image,.path=guest.path,.host=guest.libraries};
     if (!gf_apply(&guest.image,guest.slide,resolve,&binder,&stats,error,sizeof error)) { LOG("[native] fixups failed: %s\n",error); goto done; }
     LOG("[native] resolved rebases=%zu binds=%zu stubs=%u of %u\n",stats.rebases,stats.binds,gs_used(),gs_capacity());
-    if (guest.image.has_tls) {
-        if (guest.image.tls_initializer_count) { LOG("[native] TLS constructors unsupported\n"); goto done; }
-        void *template=malloc((size_t)guest.image.tls_size);
-        bool ready=template && gm_read(&guest.image.memory,guest.image.tls_address,template,(size_t)guest.image.tls_size)==GM_OK &&
-            gt_create(&guest.tls,template,(size_t)guest.image.tls_size,guest.image.tls_alignment,
-                (uintptr_t)(guest.image.tls_descriptors+guest.slide),(size_t)guest.image.tls_descriptors_size);
-        free(template);
-        if (!ready) { LOG("[native] TLS template setup failed\n"); goto done; }
-        LOG("[native] TLS template size=%zu alignment=%zu descriptors=%zu\n",guest.tls.size,guest.tls.alignment,guest.tls.descriptors_size/24);
-    }
+    if (!setup_tls(&guest.image,guest.slide,"the application")) goto done;
+    // Carried libraries get the treatment dyld gives them.
+    for (size_t i=0;i<carried.count;i++)
+        if (!setup_tls(&carried.libraries[i].image,carried.libraries[i].slide,carried.libraries[i].install_name)) goto done;
     for(size_t i=0;i<guest.image.memory.count;i++) {
         GMPage *page=&guest.image.memory.pages[i];
         if(page->bytes && !nc_write(&guest.arena,(size_t)(page->address-guest.base),page->bytes,GM_PAGE_SIZE)) goto done;
