@@ -93,17 +93,17 @@ static NSString *ChosenApplicationFolder(void) {
     if(![relative length] || [relative hasPrefix:@"/"] || [relative.pathComponents containsObject:@".."]) return nil;
     return [DocumentsDirectory() stringByAppendingPathComponent:relative];
 }
-// What a full startup runs: the application a profile names where the build
-// carries one and its files are there, and otherwise the one chosen on the
-// device. The folder holding the bundle is the working directory either way.
+// What a full startup runs, and where it runs.
 static NSString *StartupExecutable(NSString **workingDirectory) {
     NSString *documents=DocumentsDirectory();
     NSString *relativeDirectory=ProfileString(@"workingDirectory"), *relativeExecutable=ProfileString(@"executable");
     NSString *directory=relativeDirectory?[documents stringByAppendingPathComponent:relativeDirectory]:nil;
     NSString *executable=directory&&relativeExecutable?[directory stringByAppendingPathComponent:relativeExecutable]:nil;
     if(!(executable && [NSFileManager.defaultManager fileExistsAtPath:executable])) {
-        directory=ChosenApplicationFolder();
-        executable=directory?ApplicationExecutable(directory):nil;
+        NSString *folder=ChosenApplicationFolder();
+        NSString *bundle=folder?ApplicationBundle(folder):nil;
+        executable=folder?ApplicationExecutable(folder):nil;
+        directory=bundle.stringByDeletingLastPathComponent;
     }
     if(executable && workingDirectory) *workingDirectory=directory;
     return executable;
