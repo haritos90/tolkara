@@ -117,6 +117,13 @@ static bool carried_by(GuestLinkSet *set, const GuestImage *from, const char *fr
             set->refused++;
             continue;
         }
+        // Its thread-local storage cannot be set up: refused.
+        if (library->image.tls_initializer_count) {
+            snprintf(set->refusal, sizeof set->refusal, "%s needs thread-local constructors", from->dylibs[i]);
+            gi_destroy(&library->image);
+            set->refused++;
+            continue;
+        }
         library->path = strdup(path);
         library->install_name = strdup(from->dylibs[i]);
         library->loader = loader_index;

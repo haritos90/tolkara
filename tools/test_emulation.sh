@@ -256,6 +256,39 @@ build/emulation/guest_probe_sanitized build/emulation/Chain.app/Contents/MacOS/C
     --carried-libraries --validate-fixups > build/emulation/chain-imports.txt
 grep -q "carries 2 libraries of its own, 0 refused" build/emulation/chain-imports.txt
 grep -q "_inner_value <- @rpath/libinner.dylib" build/emulation/chain-imports.txt
+# A carried library with thread-local constructors is refused, not bound.
+rm -rf build/emulation/Constructors.app
+mkdir -p build/emulation/Constructors.app/Contents/MacOS build/emulation/Constructors.app/Contents/Frameworks
+cat > build/emulation/tlsinit.c <<'C'
+int constructed_value(void) { return 3; }
+static void constructor(void) {}
+__asm__(".section __DATA,__thread_init\n.p2align 3\n.quad _constructor\n");
+void *keep_constructor(void) { return (void *)constructor; }
+C
+cat > build/emulation/constructed.c <<'C'
+int constructed_value(void);
+int main(void) { return constructed_value(); }
+C
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libtlsinit.dylib build/emulation/tlsinit.c \
+    -o build/emulation/Constructors.app/Contents/Frameworks/libtlsinit.dylib
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 build/emulation/constructed.c \
+    build/emulation/Constructors.app/Contents/Frameworks/libtlsinit.dylib \
+    -Wl,-rpath,@executable_path/../Frameworks -o build/emulation/Constructors.app/Contents/MacOS/Constructors
+# The linker writes it as regular; give dyld's type.
+python3 - build/emulation/Constructors.app/Contents/Frameworks/libtlsinit.dylib <<'PY'
+import struct, sys
+data = bytearray(open(sys.argv[1], 'rb').read())
+at = data.find(b'__thread_init\0\0\0__DATA\0')
+assert at > 0
+struct.pack_into('<I', data, at + 64, 0x15)  # S_THREAD_LOCAL_INIT_FUNCTION_POINTERS
+open(sys.argv[1], 'wb').write(data)
+PY
+build/emulation/guest_probe_sanitized build/emulation/Constructors.app/Contents/MacOS/Constructors \
+    --carried-libraries --validate-fixups > build/emulation/constructors-imports.txt
+grep -q "carries 0 libraries of its own, 1 refused" build/emulation/constructors-imports.txt
+grep -q "@rpath/libtlsinit.dylib needs thread-local constructors" build/emulation/constructors-imports.txt
+grep -q "imports from carried libraries=0 elsewhere=1" build/emulation/constructors-imports.txt
 python3 tests/test_package.py
 python3 tests/test_profile.py
 xcrun clang -arch arm64 -x c -o build/emulation/module_fixture - <<'C'
