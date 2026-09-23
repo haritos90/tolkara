@@ -38,5 +38,22 @@ int main(void) {
     gt_destroy(&library);
     gt_destroy(&tls);
     assert(!gt_address(&tls,descriptors[0]));
-    puts("PASS: native TLS template per image, alignment, thread isolation, bounds and arm64 register preservation");
+    // An image declaring descriptors and carrying no template.
+    static uint64_t served_descriptors[1][3]={{0,0,16}}, bare_descriptors[2][3]={{0,0,0},{0,0,8}};
+    static GTImage images[2], none;
+    assert(gt_register(&images[0],"served",library_template,sizeof library_template,16,
+                       (uintptr_t)served_descriptors,sizeof served_descriptors));
+    assert(gt_register(&images[1],"bare",NULL,0,0,(uintptr_t)bare_descriptors,sizeof bare_descriptors));
+    const char *owner=NULL;
+    unsigned char *served=gt_find(images,2,served_descriptors[0],&owner);
+    assert(served && served[0]==5 && owner && !strcmp(owner,"served"));
+    // Refused, and named, rather than stopping at registration.
+    assert(!gt_find(images,2,bare_descriptors[1],&owner) && owner && !strcmp(owner,"bare"));
+    uint64_t stray[3]={0,0,0};
+    assert(!gt_find(images,2,stray,&owner) && !owner);
+    // No descriptors: nothing to register.
+    assert(!gt_register(&none,"none",NULL,0,0,(uintptr_t)bare_descriptors,0));
+    gt_destroy(&images[0].tls);
+    puts("PASS: native TLS template per image, alignment, thread isolation, bounds and arm64 register preservation,"
+         " descriptors without a template refused by name");
 }

@@ -262,30 +262,36 @@ static void guest_unexpected_lazy_bind(void) {
 __attribute__((noinline,used,visibility("default")))
 void host_debugger_guest_complete(bool ok) { __asm__ volatile("" : : "r"(ok) : "memory"); }
 extern void *guest_tlv_bootstrap(const uint64_t descriptor[3]);
-// One template per image, found by its descriptor range.
-static GuestTLS guest_tls[1+GL_MAX_LIBRARIES];
+// One registration per image, found by its descriptor range.
+static GTImage guest_tls[1+GL_MAX_LIBRARIES];
 static size_t guest_tls_count;
 void *guest_tlv_address(const uint64_t descriptor[3]) {
-    for (size_t i=0;i<guest_tls_count;i++) {
-        void *value=gt_address(&guest_tls[i],descriptor);
-        if (value) return value;
-    }
-    LOG("[native] invalid TLS descriptor %p\n",descriptor); abort();
+    const char *owner;
+    void *value=gt_find(guest_tls,guest_tls_count,descriptor,&owner);
+    if (value) return value;
+    if (owner) LOG("[native] %s: no thread-local storage for descriptor %p\n",owner,descriptor);
+    else LOG("[native] invalid TLS descriptor %p\n",descriptor);
+    abort();
 }
 // The image's initial thread-local bytes and its descriptors.
 static bool setup_tls(GuestImage *image, uint64_t slide, const char *name) {
     if (!image->has_tls) return true;
     if (image->tls_initializer_count) { LOG("[native] %s: TLS constructors unsupported\n",name); return false; }
+    // No descriptors of its own: nothing to set up.
+    if (!image->tls_descriptors_size) return true;
     if (guest_tls_count==sizeof guest_tls/sizeof *guest_tls) { LOG("[native] %s: too many images with TLS\n",name); return false; }
-    GuestTLS *tls=&guest_tls[guest_tls_count];
-    void *template=malloc((size_t)image->tls_size);
-    bool ready=template && gm_read(&image->memory,image->tls_address,template,(size_t)image->tls_size)==GM_OK &&
-        gt_create(tls,template,(size_t)image->tls_size,image->tls_alignment,
+    GTImage *tls=&guest_tls[guest_tls_count];
+    void *template=image->tls_size?malloc((size_t)image->tls_size):NULL;
+    bool ready=(!image->tls_size ||
+                (template && gm_read(&image->memory,image->tls_address,template,(size_t)image->tls_size)==GM_OK)) &&
+        gt_register(tls,name,template,(size_t)image->tls_size,image->tls_alignment,
             (uintptr_t)(image->tls_descriptors+slide),(size_t)image->tls_descriptors_size);
     free(template);
     if (!ready) { LOG("[native] %s: TLS template setup failed\n",name); return false; }
-    LOG("[native] %s: TLS template size=%zu alignment=%zu descriptors=%zu\n",
-        name,tls->size,tls->alignment,tls->descriptors_size/24);
+    if (image->tls_size) LOG("[native] %s: TLS template size=%zu alignment=%zu descriptors=%zu\n",
+        name,tls->tls.size,tls->tls.alignment,tls->descriptors_size/24);
+    else LOG("[native] %s: %zu thread-local descriptors with no storage; refused where used\n",
+        name,tls->descriptors_size/24);
     guest_tls_count++;
     return true;
 }
