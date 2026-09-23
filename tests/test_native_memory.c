@@ -77,6 +77,8 @@ int main(void) {
     assert(!nc_adopt(&adopted,foreign,0) && errno==EINVAL);
     assert(!nc_adopt(&adopted,foreign,page+1) && errno==EINVAL);
     assert(!nc_adopt(&adopted,(char *)foreign+8,2*page) && errno==EINVAL);
+    // The ceiling bounds an adoption; what the device has left does not.
+    assert(!nc_adopt(&adopted,foreign,(size_t)NC_MAX_ARENA+page) && errno==EINVAL);
     assert(!adopted.executable && !adopted.writable);
     assert(nc_adopt(&adopted,foreign,2*page));
     assert(adopted.published && adopted.executable==foreign && adopted.writable!=foreign);

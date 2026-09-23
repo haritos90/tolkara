@@ -33,7 +33,8 @@ typedef NCPreparation (*NCPrepare)(void *executable, size_t size, void *context)
 // confirmed prepared-and-detached receipt may produce NC_PREPARED.
 bool nc_create_managed(NativeCodeMemory *memory, size_t size, NCPrepare prepare,
                        void *context, NativeCodeMemory *quarantine);
-// Adopt a debugger's executable mapping; only the alias is ours.
+// Adopt a debugger's executable mapping; only the alias is ours. The size is
+// the one the region was asked for, bounded by the ceiling and nothing else.
 bool nc_adopt(NativeCodeMemory *memory, void *executable, size_t size);
 // Caller must ensure no thread is executing the range while it is being changed.
 // Copies through RW, flushes caches, and keeps the RX protection unchanged.

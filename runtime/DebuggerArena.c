@@ -3,6 +3,7 @@
 #include <TargetConditionals.h>
 #include <errno.h>
 #include <stdint.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 // The trap means something only on a device.
@@ -80,15 +81,24 @@ bool da_request_arena(NativeCodeMemory *memory, size_t size, FILE *log) {
         return false;
     }
     // What comes back is execute-only; the writable view is ours.
-    if (!nc_adopt(memory, executable, size)) {
-        if (log) fprintf(log, "[debugger] cannot alias the region for writing errno=%d\n", errno);
-        return false;
-    }
+    if (!da_adopt_region(memory, executable, size, log)) return false;
     if (log) fprintf(log, "[debugger] arena rx=%p rw=%p size=%zu protection=%#x\n",
                      memory->executable, memory->writable, memory->size,
                      hd_protection(memory->executable));
     return true;
 #endif
+}
+
+bool da_adopt_region(NativeCodeMemory *memory, void *region, size_t size, FILE *log) {
+    if (nc_adopt(memory, region, size)) return true;
+    int refusal = errno;
+    size_t page = (size_t)getpagesize();
+    // Give back exactly what was asked for, or nothing.
+    bool released = region && !((uintptr_t)region % page) && size && !(size % page) &&
+                    size <= NC_MAX_ARENA && !munmap(region, size);
+    if (log) fprintf(log, "[debugger] region %p of %zu bytes refused errno=%d, %s\n",
+                     region, size, refusal, released ? "given back" : "not given back");
+    return false;
 }
 
 bool da_release_debugger(const NativeCodeMemory *memory, FILE *log) {

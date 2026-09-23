@@ -69,8 +69,9 @@ bool nc_create_managed(NativeCodeMemory *memory, size_t size, NCPrepare prepare,
 }
 bool nc_adopt(NativeCodeMemory *memory, void *executable, size_t size) {
     size_t page = (size_t)getpagesize();
+    // The caller sized the request; only the ceiling is ours.
     if (!memory || memory->size || memory->executable || memory->writable || !executable ||
-        !size || size % page || size > nc_arena_limit() || (uintptr_t)executable % page) {
+        !size || size % page || size > NC_MAX_ARENA || (uintptr_t)executable % page) {
         errno = EINVAL; return false;
     }
     vm_address_t alias = 0;
