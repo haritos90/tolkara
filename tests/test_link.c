@@ -11,7 +11,10 @@ static void make(const char *path) { assert(!mkdir(path, 0700) || errno == EEXIS
 static void touch(const char *path) { FILE *file = fopen(path, "w"); assert(file); fputc('x', file); fclose(file); }
 
 int main(void) {
-    char root[] = "/tmp/tolkara-link-XXXXXX";
+    // Temporary space from TMPDIR, as the suite sets it.
+    const char *temporary = getenv("TMPDIR");
+    char root[512];
+    snprintf(root, sizeof root, "%s/tolkara-link-XXXXXX", temporary && *temporary ? temporary : "/tmp");
     assert(mkdtemp(root));
     char bundle[512], contents[512], macos[512], frameworks[512];
     char executable[512], carried[512], outside[512], out[512];
@@ -25,7 +28,7 @@ int main(void) {
     snprintf(outside, sizeof outside, "%s/elsewhere.dylib", root);
     touch(executable); touch(carried); touch(outside);
 
-    // /tmp is itself a link: resolve both, as gl_load does.
+    // The root may be a link; resolve as gl_load does.
     char resolved_bundle[512], resolved_executable[512];
     assert(realpath(bundle, resolved_bundle) && realpath(executable, resolved_executable));
     GuestLinkSet set = {0};

@@ -2,6 +2,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/emulation
+# What the tests write stays in the tree too.
+rm -rf build/tmp && mkdir -p build/tmp
+export TMPDIR="$PWD/build/tmp"
 CC=(xcrun clang -std=c11 -D_DARWIN_C_SOURCE -Wall -Wextra -Werror -O1 -g
     -fsanitize=address,undefined -fno-omit-frame-pointer -Iruntime)
 "${CC[@]}" runtime/GuestMemory.c runtime/DarwinMemory.c runtime/MemoryProbe.c tests/test_memory.c -o build/emulation/test_memory
