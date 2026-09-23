@@ -35,6 +35,29 @@ def fixture():
     return data
 
 
+# Initializers recorded as 32-bit offsets from the header.
+def offsets_fixture(offsets=(0x1000,), size=None, pointers_too=False):
+    body = b''.join(struct.pack('<I', offset) for offset in offsets)
+    text = struct.pack('<16s16sQQIIIIIIII', b'__init_offsets', b'__TEXT', BASE + 0x2000,
+                       len(body) if size is None else size, 0x2000, 2, 0, 0, 0x16, 0, 0, 0)
+    data_sections = struct.pack('<16s16sQQIIIIIIII', b'__mod_init_func', b'__DATA',
+                                BASE + PAGE, 8, PAGE, 3, 0, 0, 9, 0, 0, 0) if pointers_too else b''
+    commands = [segment('__PAGEZERO', 0, BASE, 0, 0, 0, 0),
+                segment('__TEXT', BASE, PAGE, 0, PAGE, 7, 5, text),
+                segment('__DATA', BASE + PAGE, PAGE, PAGE, 8, 3, 3, data_sections),
+                struct.pack('<IIQQ', 0x80000028, 24, 0x1000, 0)]
+    header = struct.pack('<IiiIIIII', 0xfeedfacf, 0x100000c, 0, 2, len(commands),
+                         sum(map(len, commands)), 0x200000, 0)
+    data = bytearray(PAGE + 8)
+    data[:len(header)] = header
+    blob = b''.join(commands)
+    data[32:32 + len(blob)] = blob
+    struct.pack_into('<II', data, 0x1000, 0xd65f03c0, 0xd65f03c0)
+    data[0x2000:0x2000 + len(body)] = body
+    struct.pack_into('<Q', data, PAGE, BASE + 0x1000)
+    return data
+
+
 def library_fixture(trie=None, modern=False, base=0):
     if trie is None:
         trie = b'\0\1_sample\0\x0b\3\0\x80\x20\0'
@@ -93,6 +116,15 @@ class ImageTests(unittest.TestCase):
                               (PAGE, BASE + PAGE)]:  # initializer is not executable
             data = fixture()
             struct.pack_into('<Q', data, offset, value)
+            self.probe(data, False)
+
+    def test_initializer_offsets(self):
+        output = self.probe(offsets_fixture((0x1004, 0x1000)))
+        self.assertIn('initializers=2 first=0x100001004 (offsets)', output)
+        self.assertIn('initializer 1=0x100001000', output)
+        # Into data, past the image, torn, or mixed kinds.
+        for data in (offsets_fixture((PAGE,)), offsets_fixture((0x100000,)),
+                     offsets_fixture(size=3), offsets_fixture(pointers_too=True)):
             self.probe(data, False)
 
     def test_bad_fat(self):

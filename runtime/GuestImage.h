@@ -28,6 +28,8 @@ typedef struct {
     char *rpaths[GI_MAX_RPATHS];   // LC_RPATH, for expanding @rpath install names
     size_t rpath_count;
     bool chained_fixups, has_tls;
+    bool initializer_offsets;     // S_INIT_FUNC_OFFSETS rather than pointers
+    uint64_t *initializers;       // those offsets, as preferred addresses
 } GuestImage;
 // Reads a thin or universal original executable. Never dlopens or writes it.
 // Maps at preferred guest addresses, so legacy rebases require zero slide.

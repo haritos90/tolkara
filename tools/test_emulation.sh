@@ -117,6 +117,30 @@ const void *pointers[] = {&message, (const void *)&puts, &pointers[0]};
 int main(void) { puts(message); return pointers[2] != 0; }
 C
 build/emulation/guest_probe_sanitized build/emulation/chained_fixture --validate-fixups > /dev/null
+# Built for a current macOS, constructors are recorded as offsets.
+cat > build/emulation/initializers.c <<'C'
+static int ready;
+__attribute__((constructor)) static void first(void) { ready = 1; }
+__attribute__((constructor)) static void second(void) { ready = 2; }
+int main(void) { return ready; }
+C
+cat > build/emulation/initialized_library.c <<'C'
+static int loaded;
+__attribute__((constructor)) static void load(void) { loaded = 1; }
+int library_loaded(void) { return loaded; }
+C
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 build/emulation/initializers.c \
+    -o build/emulation/initializers
+xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -dynamiclib \
+    -install_name @rpath/libinitialized.dylib build/emulation/initialized_library.c \
+    -o build/emulation/libinitialized.dylib
+build/emulation/guest_probe_sanitized build/emulation/initializers > build/emulation/initializers.txt
+build/emulation/guest_probe_sanitized build/emulation/libinitialized.dylib --library > build/emulation/initialized-library.txt
+# What the section records, read without the loader.
+read -r -a RECORDED <<<"$(otool -X -s __TEXT __init_offsets build/emulation/initializers | cut -f2)"
+grep -q "initializers=2 first=$(printf '%#x' $((0x100000000 + 0x${RECORDED[0]}))) (offsets)" build/emulation/initializers.txt
+grep -q "initializer 1=$(printf '%#x' $((0x100000000 + 0x${RECORDED[1]})))$" build/emulation/initializers.txt
+grep -q "initializers=1 first=0x[0-9a-f]* (offsets)" build/emulation/initialized-library.txt
 # An application carrying a library of its own, through @rpath.
 rm -rf build/emulation/Fixture.app
 mkdir -p build/emulation/Fixture.app/Contents/MacOS build/emulation/Fixture.app/Contents/Frameworks

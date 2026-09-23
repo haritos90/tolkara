@@ -374,12 +374,16 @@ static bool register_objc_image(const char *name, const struct mach_header *head
     load_image(name,header);
     return true;
 }
+// Offsets resolved at load; pointers read after fixups.
+static uintptr_t initializer_at(const GuestImage *image, uint64_t slide, uint64_t index) {
+    if (image->initializer_offsets) return (uintptr_t)(image->initializers[index]+slide);
+    return (uintptr_t)((const uint64_t *)(image->initializer_address+slide))[index];
+}
 // A carried library's own initializers, already relocated.
 static bool run_initializers(const GuestImage *image, uint64_t slide, const char *name,
                              int argc, const char **argv, const char **env, const char **apple) {
-    const uint64_t *initializers=(const uint64_t *)(image->initializer_address+slide);
     for (uint64_t i=0;i<image->initializer_count;i++) {
-        uintptr_t function=initializers[i];
+        uintptr_t function=initializer_at(image,slide,i);
         if (!inside((void *)function,4) || (function&3)) {
             LOG("[native] %s: initializer %llu is not in the arena (%p)\n",name,(unsigned long long)i,(void *)function);
             return false;
@@ -570,9 +574,8 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
             LOG("[native] registering original ObjC image\n");
             if (!register_objc_image(path,(const struct mach_header *)guest.arena.executable)) { ok=false; goto done; }
             LOG("[native] ObjC image registration returned\n");
-            uint64_t *initializers=(uint64_t *)(guest.image.initializer_address+guest.slide);
             for(uint64_t i=1;i<guest.image.initializer_count;i++) {
-                uintptr_t function=initializers[i];
+                uintptr_t function=initializer_at(&guest.image,guest.slide,i);
                 if (!inside((void *)function,4) || (function&3)) { LOG("[native] invalid initializer %llu=%p\n",(unsigned long long)i,(void *)function); ok=false; goto done; }
                 LOG("[native] initializer %llu preferred=%#llx native=%p\n",(unsigned long long)i,(unsigned long long)(function-guest.slide),(void *)function);
                 ((void (*)(int,const char **,const char **,const char **))function)(argc,argv,env,apple);

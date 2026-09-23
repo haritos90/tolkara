@@ -25,6 +25,7 @@ void gi_destroy(GuestImage *image) {
     for (size_t i = 0; i < image->dylib_count; i++) free(image->dylibs[i]);
     for (size_t i = 0; i < image->rpath_count; i++) free(image->rpaths[i]);
     free(image->exports);
+    free(image->initializers);
     gm_destroy(&image->memory); *image = (GuestImage){0};
 }
 static bool load(FILE *f, GuestImage *image, uint32_t file_type, char *error, size_t error_size) {
@@ -67,7 +68,7 @@ static bool load(FILE *f, GuestImage *image, uint32_t file_type, char *error, si
     image->slice_offset = slice; image->slice_size = slice_size;
     uint64_t cursor = sizeof mh, commands_end = sizeof mh + mh.sizeofcmds;
     uint64_t entry_offset = 0, init_address = 0, init_size = 0;
-    bool have_entry = false, have_init = false, have_text = false;
+    bool have_entry = false, have_init = false, have_text = false, init_offsets = false;
     uint64_t header_address = 0;
     uint32_t export_offset = 0;
     bool have_exports = false;
@@ -101,9 +102,10 @@ static bool load(FILE *f, GuestImage *image, uint32_t file_type, char *error, si
                     (!within(section.offset, section.size, slice_size) || section.offset < s.fileoff ||
                      !within(section.offset - s.fileoff, section.size, s.filesize) ||
                      section.addr - s.vmaddr != section.offset - s.fileoff)) BAD("invalid file-backed section");
-                if (type == S_MOD_INIT_FUNC_POINTERS) {
-                    if (have_init || (section.size % 8)) BAD("unsupported initializer section layout");
-                    have_init = true; init_address = section.addr; init_size = section.size;
+                if (type == S_MOD_INIT_FUNC_POINTERS || type == S_INIT_FUNC_OFFSETS) {
+                    bool offsets = type == S_INIT_FUNC_OFFSETS;
+                    if (have_init || (section.size % (offsets ? 4 : 8))) BAD("unsupported initializer section layout");
+                    have_init = true; init_offsets = offsets; init_address = section.addr; init_size = section.size;
                 }
                 if (type == S_THREAD_LOCAL_REGULAR || type == S_THREAD_LOCAL_ZEROFILL) {
                     if (section.align > 20) BAD("unsupported TLS alignment");
@@ -229,11 +231,26 @@ static bool load(FILE *f, GuestImage *image, uint32_t file_type, char *error, si
     }
     if (have_entry && (!found_entry || (image->entry & 3))) BAD("LC_MAIN is not in executable file-backed memory");
     image->header_address = header_address; image->initializer_address = init_address;
-    image->initializer_count = init_size / 8;
-    if (init_size && gm_read(&image->memory, init_address, &image->first_initializer, 8) != GM_OK) BAD("cannot read initializer pointer");
-    if (image->first_initializer && !image->chained_fixups) {
-        uint32_t instruction;
-        if (gm_fetch(&image->memory, NULL, image->first_initializer, &instruction) != GM_OK) BAD("first initializer is not executable");
+    image->initializer_offsets = init_offsets;
+    image->initializer_count = init_size / (init_offsets ? 4 : 8);
+    if (init_offsets) {
+        // Offsets from the header are final: no fixup applies.
+        image->initializers = calloc(image->initializer_count ? image->initializer_count : 1, sizeof *image->initializers);
+        if (!image->initializers) BAD("cannot hold the initializer list");
+        for (uint64_t i = 0; i < image->initializer_count; i++) {
+            uint32_t offset, instruction;
+            if (gm_read(&image->memory, init_address + i * 4, &offset, 4) != GM_OK ||
+                gm_fetch(&image->memory, NULL, header_address + offset, &instruction) != GM_OK)
+                BAD("initializer %" PRIu64 " is not executable", i);
+            image->initializers[i] = header_address + offset;
+        }
+        if (image->initializer_count) image->first_initializer = image->initializers[0];
+    } else {
+        if (init_size && gm_read(&image->memory, init_address, &image->first_initializer, 8) != GM_OK) BAD("cannot read initializer pointer");
+        if (image->first_initializer && !image->chained_fixups) {
+            uint32_t instruction;
+            if (gm_fetch(&image->memory, NULL, image->first_initializer, &instruction) != GM_OK) BAD("first initializer is not executable");
+        }
     }
     // Ensure header bytes were copied verbatim, including MH_EXECUTE and platform.
     struct mach_header_64 guest_header;
@@ -366,8 +383,11 @@ void gi_report(const GuestImage *image, FILE *out) {
                 s->name, s->address, s->size, s->file_size,
                 s->prot & GM_READ ? 'r' : '-', s->prot & GM_WRITE ? 'w' : '-', s->prot & GM_EXEC ? 'x' : '-');
     }
-    fprintf(out, "[guest] mapped=%" PRIu64 " file-backed=%" PRIu64 " entry=%#" PRIx64 " initializers=%" PRIu64 " first=%#" PRIx64 "\n",
-            image->mapped_size, image->file_backed_size, image->entry, image->initializer_count, image->first_initializer);
+    fprintf(out, "[guest] mapped=%" PRIu64 " file-backed=%" PRIu64 " entry=%#" PRIx64 " initializers=%" PRIu64 " first=%#" PRIx64 "%s\n",
+            image->mapped_size, image->file_backed_size, image->entry, image->initializer_count, image->first_initializer,
+            image->initializer_offsets ? " (offsets)" : "");
+    for (uint64_t i = 0; image->initializer_offsets && i < image->initializer_count; i++)
+        fprintf(out, "[guest] initializer %" PRIu64 "=%#" PRIx64 "\n", i, image->initializers[i]);
     fprintf(out, "[guest] pending runtime work: arm64 execution, dyld imports (bind=%u lazy=%u weak=%u), TLS=%s ObjC registration; chained-fixups=%s\n",
             image->bind_size, image->lazy_bind_size, image->weak_bind_size,
             image->has_tls ? "yes" : "no", image->chained_fixups ? "yes" : "no");
