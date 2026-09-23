@@ -32,10 +32,21 @@ static id nib_value(AKNibCursor *cursor) {
     if (type == 8) {
         uint64_t size = nib_varint(cursor);
         if (cursor->bad || size > cursor->length - cursor->offset) { cursor->bad = true; return nil; }
-        NSMutableString *hex = [NSMutableString stringWithCapacity:(NSUInteger)size * 2];
-        for (uint64_t i = 0; i < size; i++) [hex appendFormat:@"%02x", cursor->bytes[cursor->offset + i]];
+        if (!size) return @{@"data":@""};
+        // One buffer for the whole blob; nothing per byte.
+        static const char digits[] = "0123456789abcdef";
+        const uint8_t *at = cursor->bytes + cursor->offset;
+        char *hex = malloc((size_t)size * 2);
+        if (!hex) { cursor->bad = true; return nil; }
+        for (uint64_t i = 0; i < size; i++) {
+            hex[2 * i] = digits[at[i] >> 4];
+            hex[2 * i + 1] = digits[at[i] & 15];
+        }
         cursor->offset += (NSUInteger)size;
-        return @{@"data":hex};
+        NSString *text = [[NSString alloc] initWithBytesNoCopy:hex length:(NSUInteger)size * 2
+                                                      encoding:NSASCIIStringEncoding freeWhenDone:YES];
+        if (!text) { free(hex); cursor->bad = true; return nil; }
+        return @{@"data":text};
     }
     static const unsigned widths[] = {1, 2, 4, 8, 0, 0, 4, 8, 0, 0, 4};
     if (type >= sizeof widths / sizeof *widths || !widths[type]) { cursor->bad = true; return nil; }

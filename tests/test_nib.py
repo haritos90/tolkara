@@ -48,10 +48,26 @@ def typed_fixture():
     tables=[objects,keys,values,classes];offset=50;header=[1,10]
     for count,table in zip([2,11,11,2],tables):header+=[count,offset];offset+=len(table)
     return b'NIBArchive'+struct.pack('<10I',*header)+b''.join(tables)
+# One data value of the given size, as an image in a nib.
+def blob_fixture(size):
+    blob=bytes(range(256))*(size//256)+bytes(size%256)
+    objects=bytes([0x80,0x80,0x81])
+    keys=varint(8)+b'NS.bytes'
+    values=bytes([0x80,8])+varint(len(blob))+blob
+    classes=varint(7)+varint(0)+b'NSData\0'
+    tables=[objects,keys,values,classes];offset=50;header=[1,10]
+    for table in tables:header+=[1,offset];offset+=len(table)
+    return b'NIBArchive'+struct.pack('<10I',*header)+b''.join(tables)
 class NibTests(unittest.TestCase):
-    def in_app(self,data):
+    def in_app(self,data,*command):
         path=IN_APP.parent/'nib-fixture.nib';path.write_bytes(data)
-        return subprocess.run([str(IN_APP),str(path)],capture_output=True,text=True)
+        return subprocess.run([*command,str(IN_APP),str(path)],capture_output=True,text=True)
+    def resident(self,data):
+        result=self.in_app(data,'/usr/bin/time','-l')
+        self.assertEqual(result.returncode,0,result.stderr)
+        for line in result.stderr.splitlines():
+            if line.strip().endswith('maximum resident set size'):return int(line.split()[0])
+        self.fail('no resident size reported')
     def test_preserves_typed_values(self):
         self.assertEqual(reader.parse(fixture()),{'format':1,'objects':[{'class':'NSString','values':[['NS.bytes',{'data':'68656c6c6f'}]]}]})
     def test_truncated_tables(self):
@@ -63,10 +79,16 @@ class NibTests(unittest.TestCase):
     @unittest.skipUnless(IN_APP,'the in-app reader was not built')
     def test_in_app_reader_agrees(self):
         # A value of every kind, not just the table shape.
-        for data in (fixture(),typed_fixture()):
+        for data in (fixture(),typed_fixture(),blob_fixture(4<<20)):
             result=self.in_app(data)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertEqual(json.loads(result.stdout),reader.parse(data))
+    @unittest.skipUnless(IN_APP,'the in-app reader was not built')
+    def test_in_app_reader_holds_a_blob_in_one_piece(self):
+        # Memory per byte of blob, fixed cost aside.
+        size=4<<20
+        growth=(self.resident(blob_fixture(size))-self.resident(blob_fixture(256)))/size
+        self.assertLess(growth,24,f'{growth:.1f} bytes held per byte of blob')
     @unittest.skipUnless(IN_APP,'the in-app reader was not built')
     def test_in_app_reader_refuses_the_same(self):
         for data in truncated()+malformed():
