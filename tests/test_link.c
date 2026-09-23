@@ -94,5 +94,27 @@ int main(void) {
     assert(!set.root && !set.executable && !set.count && !set.executable_image);
     unlink(executable); unlink(carried); unlink(outside);
     rmdir(macos); rmdir(frameworks); rmdir(contents); rmdir(bundle); rmdir(root);
-    puts("PASS: carried library paths resolve inside the application only (@rpath, @loader_path, @executable_path)");
+
+    // What an image occupies, measured from its lowest mapped segment.
+    static GuestImage gap = {.header_address = 0, .segment_count = 2};
+    gap.segments[0] = (GISegment){.name = "__TEXT", .address = 0, .size = 0x4000, .prot = 5};
+    gap.segments[1] = (GISegment){.name = "__DATA", .address = 0x10000, .size = 0x4000, .prot = 3};
+    uint64_t low = 1;
+    assert(gi_extent(&gap, &low) == 0x14000 && low == 0);
+    // A segment below the header still counts.
+    static GuestImage below = {.header_address = 0x8000, .segment_count = 2};
+    below.segments[0] = (GISegment){.name = "__DATA", .address = 0, .size = 0x4000, .prot = 3};
+    below.segments[1] = (GISegment){.name = "__TEXT", .address = 0x8000, .size = 0x4000, .prot = 5};
+    assert(gi_extent(&below, &low) == 0xC000 && low == 0);
+    // Nothing mapped: nothing needed, measured from the header.
+    static GuestImage empty = {.header_address = 0x4000, .segment_count = 1};
+    empty.segments[0] = (GISegment){.name = "__PAGEZERO", .address = 0, .size = 0x100000000ULL};
+    assert(gi_extent(&empty, &low) == 0 && low == 0x4000);
+    // The report and the arena add up the same measure.
+    static GuestLinkSet measured = {.count = 2};
+    measured.libraries[0].image = gap; measured.libraries[1].image = below;
+    assert(gl_span(&measured) == 0x14000 + 0xC000);
+
+    puts("PASS: carried library paths resolve inside the application only (@rpath, @loader_path, @executable_path),"
+         " extent from the lowest mapped segment");
 }

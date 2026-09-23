@@ -45,5 +45,7 @@ typedef struct { uint64_t address; bool absolute; int ordinal; const char *name;
 // slide only to non-absolute results. Unsupported export kinds fail explicitly.
 GIExportResult gi_export(const GuestImage *image, const char *symbol, GIExport *out,
                          char *error, size_t error_size);
+// Lowest mapped address and the page-aligned reach from it.
+uint64_t gi_extent(const GuestImage *image, uint64_t *low);
 void gi_destroy(GuestImage *image);
 void gi_report(const GuestImage *image, FILE *out);

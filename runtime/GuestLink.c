@@ -205,11 +205,7 @@ const GuestLibrary *gl_lookup(const GuestLinkSet *set, const GuestImage *from, c
 
 uint64_t gl_span(const GuestLinkSet *set) {
     uint64_t total = 0;
-    for (size_t i = 0; i < set->count; i++) {
-        uint64_t size = set->libraries[i].image.mapped_size;
-        size = (size + GM_PAGE_SIZE - 1) & ~(uint64_t)(GM_PAGE_SIZE - 1);
-        total += size;
-    }
+    for (size_t i = 0; i < set->count; i++) total += gi_extent(&set->libraries[i].image, NULL);
     return total;
 }
 

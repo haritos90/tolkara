@@ -258,6 +258,19 @@ bool gi_load(const char *path, GuestImage *image, char *error, size_t error_size
 bool gi_load_library(const char *path, GuestImage *image, char *error, size_t error_size) {
     return load_path(path, image, MH_DYLIB, error, error_size);
 }
+uint64_t gi_extent(const GuestImage *image, uint64_t *low) {
+    uint64_t start = UINT64_MAX, end = 0;
+    for (size_t i = 0; i < image->segment_count; i++) {
+        const GISegment *s = &image->segments[i];
+        // What gi_load maps is what gets placed.
+        if (!s->size || !strcmp(s->name, "__PAGEZERO")) continue;
+        if (s->address < start) start = s->address;
+        if (s->address + s->size > end) end = s->address + s->size;
+    }
+    if (start > end) { if (low) *low = image->header_address; return 0; }
+    if (low) *low = start;
+    return (end - start + GM_PAGE_SIZE - 1) & ~(uint64_t)(GM_PAGE_SIZE - 1);
+}
 static bool export_uleb(const unsigned char **cursor, const unsigned char *end, uint64_t *value) {
     *value = 0;
     for (unsigned shift = 0; shift <= 63 && *cursor < end; shift += 7) {

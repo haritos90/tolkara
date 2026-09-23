@@ -418,17 +418,11 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     }
     size_t span=(size_t)(end-guest.base);
     // One region for everything: a debugger prepares it once.
-    uint64_t offset[GL_MAX_LIBRARIES];
+    uint64_t offset[GL_MAX_LIBRARIES], low[GL_MAX_LIBRARIES];
     size_t total=span;
     for (size_t i=0;i<carried.count;i++) {
-        GuestImage *library=&carried.libraries[i].image;
-        uint64_t library_end=library->header_address;
-        for (size_t j=0;j<library->segment_count;j++) {
-            GISegment *s=&library->segments[j];
-            if (s->prot && s->address+s->size>library_end) library_end=s->address+s->size;
-        }
         offset[i]=total;
-        total+=(size_t)((library_end-library->header_address+GM_PAGE_SIZE-1)&~(uint64_t)(GM_PAGE_SIZE-1));
+        total+=(size_t)gi_extent(&carried.libraries[i].image,&low[i]);
     }
     size_t limit=nc_arena_limit();
     LOG("[native] guest image span %zu bytes, %zu with carried libraries; this process may prepare %zu of the %zu it has left\n",
@@ -473,7 +467,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     if (external && !da_entry_allowed(&guest.arena,guest.log)) { LOG("[native] guest entry blocked\n"); goto done; }
     guest.slide=(uintptr_t)guest.arena.executable-guest.base;
     for (size_t i=0;i<carried.count;i++)
-        carried.libraries[i].slide=(uintptr_t)guest.arena.executable+offset[i]-carried.libraries[i].image.header_address;
+        carried.libraries[i].slide=(uintptr_t)guest.arena.executable+offset[i]-low[i];
     LOG("[native] arena ready base=%p slide=%#llx\n",guest.arena.executable,(unsigned long long)guest.slide);
     {
         NSData *data=[NSData dataWithContentsOfFile:@(library_map)];
@@ -527,7 +521,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     }
     for (size_t i=0;i<carried.count;i++) {
         GuestLibrary *library=&carried.libraries[i];
-        uint64_t base=library->image.header_address;
+        uint64_t base=low[i];
         for (size_t j=0;j<library->image.memory.count;j++) {
             GMPage *page=&library->image.memory.pages[j];
             if (page->bytes && !nc_write(&guest.arena,(size_t)(page->address-base+offset[i]),page->bytes,GM_PAGE_SIZE)) {
