@@ -430,12 +430,15 @@ static NSString *ExecutableMemoryState(void) {
     char text[4096];
     hd_format(&report,text,sizeof text);
     NSMutableString *panel=[NSMutableString stringWithUTF8String:text];
-    // Only where something already prepared this process: it traps.
+    // It only traps where a debugger is attached now.
     if(report.debugged) {
         NativeCodeMemory arena={0};
         BOOL provided=da_request_arena(&arena,(size_t)getpagesize()*64,log);
         [panel appendFormat:@"Debugger arena: %@\n",provided?
             (hd_is_executable(arena.executable)?@"provided":@"provided, not executable"):@"refused"];
+        // A reservation later in this session needs it back.
+        nc_destroy(&arena);
+        if(provided && log) fprintf(log,"[debugger] the probe region was given back\n");
         // This session's guest memory can only come from that debugger.
         (void)ng_use_external_authorization();
     }
