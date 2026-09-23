@@ -17,6 +17,15 @@ static vm_prot_t protection(void *pointer) {
     assert(address<=(vm_address_t)pointer && (vm_address_t)pointer-address<size);
     return info.protection;
 }
+// Whether anything is mapped at this address now.
+static bool mapped(void *pointer) {
+    vm_address_t address=(vm_address_t)pointer; vm_size_t size=0;
+    vm_region_basic_info_data_64_t info={0}; mach_msg_type_number_t count=VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object=MACH_PORT_NULL;
+    if(vm_region_64(mach_task_self(),&address,&size,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&info,&count,&object)!=KERN_SUCCESS) return false;
+    if(object!=MACH_PORT_NULL)mach_port_deallocate(mach_task_self(),object);
+    return address<=(vm_address_t)pointer && (vm_address_t)pointer-address<size;
+}
 
 static bool accept_zeroed_pages(void *address, size_t size, void *context) {
     unsigned *calls = context;
@@ -86,8 +95,11 @@ int main(void) {
     assert(!nc_adopt(&adopted,foreign,2*page) && errno==EINVAL); // already owns a mapping
     assert(nc_write(&adopted,page,data,sizeof data));
     assert(!memcmp((char *)adopted.executable+page,data,sizeof data));
+    void *alias=adopted.writable;
     nc_destroy(&adopted);
     assert(!adopted.executable && !adopted.writable);
+    // Adopted, the region is ours: teardown unmaps it with the alias.
+    assert(!mapped(foreign) && !mapped(alias));
 
     unsigned old_calls=calls;
     assert(!nc_create_managed(&memory,page,uncertain_pages,&calls,&quarantine) && errno==EINVAL);
