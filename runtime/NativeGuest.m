@@ -545,7 +545,9 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     {
         uintptr_t initializer=guest.image.first_initializer+guest.slide;
         gm_destroy(&guest.image.memory);
-        LOG("[native] entering original initializer preferred=%#llx native=%p\n",(unsigned long long)guest.image.first_initializer,(void *)initializer);
+        if (guest.image.initializer_count)
+            LOG("[native] entering original initializer preferred=%#llx native=%p\n",(unsigned long long)guest.image.first_initializer,(void *)initializer);
+        else LOG("[native] the application records no initializers\n");
         char *executable_argument=NULL;
         asprintf(&executable_argument,"executable_path=%s",guest.path);
         const char *argv[]={guest.path,NULL}, *env[]={NULL}, *apple[]={executable_argument,NULL};
@@ -557,8 +559,12 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
             if (!register_objc_image(library->path,(const struct mach_header *)(library->image.header_address+library->slide)) ||
                 !run_initializers(&library->image,library->slide,library->install_name,argc,argv,env,apple)) { ok=false; goto done; }
         }
-        ((void (*)(int,const char **,const char **,const char **))initializer)(argc,argv,env,apple);
-        LOG("[native] first original initializer returned\n"); ok=true;
+        // Nothing to call where the image records no initializer.
+        if (guest.image.initializer_count) {
+            ((void (*)(int,const char **,const char **,const char **))initializer)(argc,argv,env,apple);
+            LOG("[native] first original initializer returned\n");
+        }
+        ok=true;
         if (full_startup) {
             // After the unpacking initializer has restored the code.
             LOG("[native] registering original ObjC image\n");
