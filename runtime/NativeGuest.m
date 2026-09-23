@@ -374,16 +374,11 @@ static bool register_objc_image(const char *name, const struct mach_header *head
     load_image(name,header);
     return true;
 }
-// Offsets resolved at load; pointers read after fixups.
-static uintptr_t initializer_at(const GuestImage *image, uint64_t slide, uint64_t index) {
-    if (image->initializer_offsets) return (uintptr_t)(image->initializers[index]+slide);
-    return (uintptr_t)((const uint64_t *)(image->initializer_address+slide))[index];
-}
 // A carried library's own initializers, already relocated.
 static bool run_initializers(const GuestImage *image, uint64_t slide, const char *name,
                              int argc, const char **argv, const char **env, const char **apple) {
     for (uint64_t i=0;i<image->initializer_count;i++) {
-        uintptr_t function=initializer_at(image,slide,i);
+        uintptr_t function=(uintptr_t)gi_placed_initializer(image,slide,i);
         if (!inside((void *)function,4) || (function&3)) {
             LOG("[native] %s: initializer %llu is not in the arena (%p)\n",name,(unsigned long long)i,(void *)function);
             return false;
@@ -547,10 +542,11 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         gm_destroy(&library->image.memory);
     }
     {
-        uintptr_t initializer=guest.image.first_initializer+guest.slide;
+        // Read like the rest; a chained record is no address.
+        uintptr_t initializer=guest.image.initializer_count?(uintptr_t)gi_placed_initializer(&guest.image,guest.slide,0):0;
         gm_destroy(&guest.image.memory);
         if (guest.image.initializer_count)
-            LOG("[native] entering original initializer preferred=%#llx native=%p\n",(unsigned long long)guest.image.first_initializer,(void *)initializer);
+            LOG("[native] entering original initializer preferred=%#llx native=%p\n",(unsigned long long)(initializer-guest.slide),(void *)initializer);
         else LOG("[native] the application records no initializers\n");
         char *executable_argument=NULL;
         asprintf(&executable_argument,"executable_path=%s",guest.path);
@@ -575,7 +571,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
             if (!register_objc_image(path,(const struct mach_header *)guest.arena.executable)) { ok=false; goto done; }
             LOG("[native] ObjC image registration returned\n");
             for(uint64_t i=1;i<guest.image.initializer_count;i++) {
-                uintptr_t function=initializer_at(&guest.image,guest.slide,i);
+                uintptr_t function=(uintptr_t)gi_placed_initializer(&guest.image,guest.slide,i);
                 if (!inside((void *)function,4) || (function&3)) { LOG("[native] invalid initializer %llu=%p\n",(unsigned long long)i,(void *)function); ok=false; goto done; }
                 LOG("[native] initializer %llu preferred=%#llx native=%p\n",(unsigned long long)i,(unsigned long long)(function-guest.slide),(void *)function);
                 ((void (*)(int,const char **,const char **,const char **))function)(argc,argv,env,apple);

@@ -288,6 +288,10 @@ uint64_t gi_extent(const GuestImage *image, uint64_t *low) {
     if (low) *low = start;
     return (end - start + GM_PAGE_SIZE - 1) & ~(uint64_t)(GM_PAGE_SIZE - 1);
 }
+uint64_t gi_placed_initializer(const GuestImage *image, uint64_t slide, uint64_t index) {
+    if (image->initializer_offsets) return image->initializers[index] + slide;
+    return ((const uint64_t *)(uintptr_t)(image->initializer_address + slide))[index];
+}
 static bool export_uleb(const unsigned char **cursor, const unsigned char *end, uint64_t *value) {
     *value = 0;
     for (unsigned shift = 0; shift <= 63 && *cursor < end; shift += 7) {

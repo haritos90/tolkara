@@ -49,5 +49,7 @@ GIExportResult gi_export(const GuestImage *image, const char *symbol, GIExport *
                          char *error, size_t error_size);
 // Lowest mapped address and the page-aligned reach from it.
 uint64_t gi_extent(const GuestImage *image, uint64_t *low);
+// Initializer at slide; pointers are read from placed memory.
+uint64_t gi_placed_initializer(const GuestImage *image, uint64_t slide, uint64_t index);
 void gi_destroy(GuestImage *image);
 void gi_report(const GuestImage *image, FILE *out);

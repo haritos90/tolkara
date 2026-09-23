@@ -124,6 +124,19 @@ int main(void) {
         assert(gm_read(&i.memory, 0x100000000, &value, 8) == GM_OK && value == 0x100200800);
         gi_destroy(&i);
 
+        // Two pointer initializers in a chain: read after fixups.
+        chained_setup(&i, DYLD_CHAINED_PTR_64, 0x100000800ULL | (2ULL << 51), 0x100000900ULL);
+        i.initializer_address = 0x100000000; i.initializer_count = 2;
+        uint64_t record = 0;
+        assert(gm_read(&i.memory, 0x100000000, &record, 8) == GM_OK);
+        assert(gf_apply(&i, 0x200000, resolve, NULL, &stats, error, sizeof error) && stats.rebases == 2);
+        uint64_t placed[2];
+        assert(gm_read(&i.memory, 0x100000000, placed, sizeof placed) == GM_OK);
+        uint64_t at = (uintptr_t)placed - i.initializer_address;
+        assert(gi_placed_initializer(&i, at, 0) == 0x100200800 && gi_placed_initializer(&i, at, 1) == 0x100200900);
+        assert(record + 0x200000 != 0x100200800);
+        gi_destroy(&i);
+
         // Malformed chains are refused rather than followed.
         chained_setup(&i, 99, rebase, bind);
         assert(!gf_apply(&i, 0, resolve, NULL, &stats, error, sizeof error) && strstr(error, "pointer format"));
@@ -138,5 +151,6 @@ int main(void) {
         assert(!gf_apply(&i, 0, resolve, NULL, &stats, error, sizeof error) && strstr(error, "outside guest memory"));
         gi_destroy(&i);
     }
-    puts("PASS: Mach-O pointer relocation, import binding, lazy binds first, signed addends, malformed fixup bounds");
+    puts("PASS: Mach-O pointer relocation, import binding, lazy binds first, chained initializers read after fixups,"
+         " signed addends, malformed fixup bounds");
 }
