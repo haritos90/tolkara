@@ -456,10 +456,9 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         LOG("[native] using the arena reserved earlier: %zu bytes\n",guest.arena.size);
     }
     else if(external) {
-        // Ask an attached debugger first, then have it detach.
+        // An enabler first; otherwise an arena of our own.
         arena_ready=da_request_arena(&guest.arena,total,guest.log);
-        if(arena_ready) (void)da_release_debugger(&guest.arena,guest.log);
-        else arena_ready=nc_create_managed(&guest.arena,total,prepare_externally,NULL,&external_quarantine);
+        if(!arena_ready) arena_ready=nc_create_managed(&guest.arena,total,prepare_externally,NULL,&external_quarantine);
     }
 #if TOLKARA_INTEGRATED_AUTH
     else if(local)
@@ -470,9 +469,8 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     if (!arena_ready) { LOG("[native] arena preparation failed errno=%d; guest entry blocked\n",errno); goto done; }
     // A protection change can be reported and not granted.
     LOG("[native] arena protection %#x\n",hd_protection(guest.arena.executable));
-    if (external && !hd_is_executable(guest.arena.executable)) {
-        LOG("[native] the arena is not executable: nothing prepared it, or it did not survive detaching\n"); goto done;
-    }
+    // Whichever route prepared it: nothing attached, really executable.
+    if (external && !da_entry_allowed(&guest.arena,guest.log)) { LOG("[native] guest entry blocked\n"); goto done; }
     guest.slide=(uintptr_t)guest.arena.executable-guest.base;
     for (size_t i=0;i<carried.count;i++)
         carried.libraries[i].slide=(uintptr_t)guest.arena.executable+offset[i]-carried.libraries[i].image.header_address;

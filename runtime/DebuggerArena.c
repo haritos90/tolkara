@@ -12,8 +12,11 @@
 #define DA_PROTOCOL 0
 #endif
 
+static bool (*attachment)(void);
+void da_attachment_probe(bool (*probe)(void)) { attachment = probe; }
+
 // Attached now, not merely prepared: that flag survives the detach.
-bool da_debugger_present(void) { return hd_debugger_attached(); }
+bool da_debugger_present(void) { return attachment ? attachment() : hd_debugger_attached(); }
 
 bool da_plausible_region(const void *address) {
     uintptr_t value = (uintptr_t)address;
@@ -39,6 +42,19 @@ static void jit26_detach(void) {
                      "ret\n");
 }
 #endif
+
+// Ask whatever is attached to let go.
+static bool da_detached(FILE *log) {
+    if (!da_debugger_present()) return true;
+#if DA_PROTOCOL
+    jit26_detach();
+#else
+    if (log) fprintf(log, "[debugger] nothing here can ask a debugger to let go\n");
+#endif
+    bool attached = da_debugger_present();
+    if (log) fprintf(log, "[debugger] asked to let go; %s attached\n", attached ? "still" : "no longer");
+    return !attached;
+}
 
 bool da_request_arena(NativeCodeMemory *memory, size_t size, FILE *log) {
 #if !DA_PROTOCOL
@@ -76,17 +92,26 @@ bool da_request_arena(NativeCodeMemory *memory, size_t size, FILE *log) {
 }
 
 bool da_release_debugger(const NativeCodeMemory *memory, FILE *log) {
-#if !DA_PROTOCOL
-    (void)memory; (void)log;
-    return false;
-#else
     if (!memory || !memory->executable) return false;
-    if (!da_debugger_present()) return hd_is_executable(memory->executable);
-    jit26_detach();
+    (void)da_detached(log);
     // Whether execute survives the detach is the device's answer.
     bool executable = hd_is_executable(memory->executable);
-    if (log) fprintf(log, "[debugger] asked to detach; the arena %s executable (protection %#x)\n",
+    if (log) fprintf(log, "[debugger] the arena %s executable (protection %#x)\n",
                      executable ? "is still" : "is no longer", hd_protection(memory->executable));
     return executable;
-#endif
+}
+
+// Every route into guest code passes here.
+bool da_entry_allowed(const NativeCodeMemory *memory, FILE *log) {
+    if (!memory || !memory->executable) return false;
+    if (!da_detached(log)) {
+        if (log) fprintf(log, "[debugger] something is still attached to this process\n");
+        return false;
+    }
+    if (!hd_is_executable(memory->executable)) {
+        if (log) fprintf(log, "[debugger] the arena is not executable: nothing prepared it,"
+                              " or it did not survive detaching\n");
+        return false;
+    }
+    return true;
 }

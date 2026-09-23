@@ -14,3 +14,7 @@ bool da_plausible_region(const void *address);
 bool da_request_arena(NativeCodeMemory *memory, size_t size, FILE *log);
 // Ask the debugger to detach; report whether execute survived.
 bool da_release_debugger(const NativeCodeMemory *memory, FILE *log);
+// Guest entry: nothing attached, and the arena executes.
+bool da_entry_allowed(const NativeCodeMemory *memory, FILE *log);
+// Test support: answer the attachment question with this instead.
+void da_attachment_probe(bool (*probe)(void));
