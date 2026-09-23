@@ -29,12 +29,20 @@ PROFILE=$(find "$APP" -name embedded.mobileprovision -print -quit)
 [ -z "$PROFILE" ] || { echo "Refusing to package: the build embeds a provisioning profile."; exit 1; }
 for bundle in "$APP" "$APP"/PlugIns/*.appex; do
     [ -d "$bundle" ] || continue
-    # codesign exits non-zero when unsigned, as expected.
-    TEAM=$(codesign -dvv "$bundle" 2>&1 | sed -n 's/^TeamIdentifier=//p' || true)
-    case "${TEAM:-not set}" in
-        ""|"not set") ;;
-        *) echo "Refusing to package: $(basename "$bundle") is signed with team $TEAM."; exit 1;;
-    esac
+    # Unsigned, or ad hoc with no team; nothing else.
+    if SIGNATURE=$(codesign -dvv "$bundle" 2>&1); then
+        TEAM=$(printf '%s\n' "$SIGNATURE" | sed -n 's/^TeamIdentifier=//p')
+        case "$TEAM" in
+            "not set") ;;
+            "") echo "Refusing to package: cannot tell who signed $(basename "$bundle")."; exit 1;;
+            *) echo "Refusing to package: $(basename "$bundle") is signed with team $TEAM."; exit 1;;
+        esac
+    else
+        case "$SIGNATURE" in
+            *"code object is not signed at all"*) ;;
+            *) echo "Refusing to package: cannot tell whether $(basename "$bundle") is signed: $SIGNATURE"; exit 1;;
+        esac
+    fi
 done
 
 # An .ipa is a zip with Payload/.
