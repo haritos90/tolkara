@@ -116,7 +116,7 @@ static bool binds(GuestImage *image, Cursor *c, bool lazy, bool weak_stream, GFR
                          seg, (unsigned long long)offset, type, ordinal);
                 return false;
             }
-            if (!resolve(symbol, ordinal, (flags & BIND_SYMBOL_FLAGS_WEAK_IMPORT) || weak_stream, &value, context)) {
+            if (!resolve(symbol, ordinal, (flags & BIND_SYMBOL_FLAGS_WEAK_IMPORT) || weak_stream, lazy, &value, context)) {
                 snprintf(error, error_size, "unresolved import %s (ordinal %d)", symbol, ordinal); return false;
             }
             value += addend;
@@ -249,7 +249,7 @@ static bool chained(GuestImage *image, uint64_t slide, GFResolve resolve, void *
                         uint32_t ordinal = raw & 0xFFFFFF;
                         if (ordinal >= imports_count) FAIL("chained bind names import %u of %u", ordinal, imports_count);
                         const ChainedImport *import = &imports[ordinal];
-                        if (!resolve(import->name, import->ordinal, import->weak, &value, context) && !import->weak)
+                        if (!resolve(import->name, import->ordinal, import->weak, false, &value, context) && !import->weak)
                             FAIL("unresolved import %s (ordinal %d)", import->name, import->ordinal);
                         value += import->addend + ((raw >> 24) & 0xFF);
                         stats->binds++;
@@ -282,14 +282,15 @@ bool gf_apply(GuestImage *image, uint64_t slide, GFResolve resolve, void *contex
     if (error_size) error[0] = 0;
     if (!resolve) { snprintf(error, error_size, "unsupported fixup configuration"); return false; }
     if (image->chained_fixups) return chained(image, slide, resolve, context, stats, error, error_size);
-    const uint32_t offsets[] = {image->rebase_offset, image->bind_offset, image->lazy_bind_offset, image->weak_bind_offset};
-    const uint32_t sizes[] = {image->rebase_size, image->bind_size, image->lazy_bind_size, image->weak_bind_size};
+    // Lazy first: a name bound both ways is a call.
+    const uint32_t offsets[] = {image->rebase_offset, image->lazy_bind_offset, image->bind_offset, image->weak_bind_offset};
+    const uint32_t sizes[] = {image->rebase_size, image->lazy_bind_size, image->bind_size, image->weak_bind_size};
     for (size_t i = 0; i < 4; i++) {
         if (!sizes[i]) continue;
         uint8_t *bytes = stream(image, offsets[i], sizes[i]);
         if (!bytes) { snprintf(error, error_size, "fixup stream outside readable image"); return false; }
         Cursor c = {bytes, bytes + sizes[i], false};
-        bool ok = i == 0 ? rebases(image, &c, slide, stats) : binds(image, &c, i == 2, i == 3, resolve, context, stats, error, error_size);
+        bool ok = i == 0 ? rebases(image, &c, slide, stats) : binds(image, &c, i == 1, i == 3, resolve, context, stats, error, error_size);
         size_t consumed = (size_t)(c.p - bytes);
         free(bytes);
         if (!ok) { if (error_size && !error[0]) snprintf(error, error_size, "invalid or unsupported fixup stream %zu at byte %zu (rebases=%zu binds=%zu)", i, consumed, stats->rebases, stats->binds); return false; }

@@ -7,8 +7,8 @@
 static struct { size_t answered, missing; } imports;
 // The image whose fixups are walked; ordinals index its list.
 typedef struct { GuestLinkSet *set; const GuestImage *image; const char *path; } Binder;
-static bool inspect_import(const char *s, int o, bool w, uint64_t *v, void *c) {
-    (void)w;
+static bool inspect_import(const char *s, int o, bool w, bool l, uint64_t *v, void *c) {
+    (void)w; (void)l;
     Binder *binder = c;
     const char *needed = o > 0 && (size_t)o <= binder->image->dylib_count ? binder->image->dylibs[o - 1] : NULL;
     const GuestLibrary *answer = gl_lookup(binder->set, binder->image, binder->path, needed, s, v);

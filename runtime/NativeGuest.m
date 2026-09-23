@@ -343,7 +343,7 @@ static NSString *library_path(NSString *install_name, const char *frameworks) {
 }
 // The image being fixed up. Ordinals index its own list.
 typedef struct { const GuestImage *image; const char *path; void *const *host; } GuestBinder;
-static bool resolve(const char *symbol, int ordinal, bool weak, uint64_t *value, void *context) {
+static bool resolve(const char *symbol, int ordinal, bool weak, bool lazy, uint64_t *value, void *context) {
     const GuestBinder *binder = context;
     const char *name = symbol[0]=='_' ? symbol+1 : symbol;
     void *pointer = hook(name);
@@ -358,7 +358,7 @@ static bool resolve(const char *symbol, int ordinal, bool weak, uint64_t *value,
     if (!pointer && needed && binder->host && binder->host[ordinal-1]) pointer=dlsym(binder->host[ordinal-1],name);
     if (!pointer) pointer=dlsym(RTLD_DEFAULT,name);
     // Nothing provides it: a stub, or null when weak.
-    if (!pointer && !weak) pointer=gs_bind(symbol,gs_kind(symbol));
+    if (!pointer && !weak) pointer=gs_bind(symbol,gs_kind_bound(symbol,binder && binder->image->lazy_bind_size,lazy));
     if (!pointer && !weak) LOG("[native] unresolved %s ordinal=%d\n",symbol,ordinal);
     *value=(uintptr_t)pointer; return pointer || weak;
 }

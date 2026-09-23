@@ -56,6 +56,12 @@ GSKind gs_kind(const char *symbol) {
     return GS_FUNCTION;
 }
 
+GSKind gs_kind_bound(const char *symbol, bool image_binds_lazily, bool bound_lazily) {
+    GSKind named = gs_kind(symbol);
+    if (!image_binds_lazily || named == GS_CLASS || named == GS_METACLASS) return named;
+    return bound_lazily ? GS_FUNCTION : GS_DATA;
+}
+
 // An unknown selector is reported once and answered with zero.
 static void report_selector(id receiver, SEL selector) {
     static NSMutableSet *seen;

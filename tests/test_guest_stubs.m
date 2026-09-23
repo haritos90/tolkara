@@ -21,6 +21,14 @@ int main(void) {
         assert(gs_kind("_OBJC_CLASS_$_TKAbsentClass") == GS_CLASS);
         assert(gs_kind("_OBJC_METACLASS_$_TKAbsentClass") == GS_METACLASS);
         assert(gs_kind("_OBJC_IVAR_$_TKAbsentClass._field") == GS_DATA);
+        // With lazy pointers the image decides, not the name.
+        assert(gs_kind_bound("_kLooksLikeAConstant", true, true) == GS_FUNCTION);
+        assert(gs_kind_bound("_NSBeep", true, false) == GS_DATA);
+        assert(gs_kind_bound("_OBJC_CLASS_$_TKAbsentClass", true, false) == GS_CLASS);
+        assert(gs_kind_bound("_OBJC_METACLASS_$_TKAbsentClass", true, true) == GS_METACLASS);
+        // No lazy pointers: the name rules stand.
+        assert(gs_kind_bound("_kCGColorSpaceSRGB", false, true) == GS_DATA);
+        assert(gs_kind_bound("_NSBeep", false, false) == GS_FUNCTION);
 
         FILE *log = tmpfile();
         assert(log);
@@ -70,5 +78,5 @@ int main(void) {
         assert(!gs_bind("_tk_absent_overflow", GS_FUNCTION));
         fclose(log);
     }
-    puts("PASS: stub kinds, function slots, data and class stubs, one report per stub, exhaustion");
+    puts("PASS: stub kinds by name and by where bound, function slots, data and class stubs, one report per stub, exhaustion");
 }
